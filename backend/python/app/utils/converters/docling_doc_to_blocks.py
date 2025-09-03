@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from app.models.blocks import (
     Block,
+    BlockContainerIndex,
     BlockGroup,
     BlocksContainer,
     BlockType,
@@ -228,9 +229,8 @@ class DoclingDocToBlocksConverter():
             table_summary = response.summary
             column_headers = response.headers
             table_rows_text,table_rows = await self.get_rows_text(table_data, table_summary, column_headers)
-
+      
             block_group = BlockGroup(
-                id=str(uuid.uuid4()),
                 index=len(block_groups),
                 name=item.get("name", ""),
                 type=GroupType.TABLE,
@@ -277,7 +277,7 @@ class DoclingDocToBlocksConverter():
                 )
                 # _enrich_metadata(block, row, doc_dict)
                 blocks.append(block)
-                childBlocks.append(index)
+                childBlocks.append(BlockContainerIndex(block_index=index))
 
             block_group.children = childBlocks
             block_groups.append(block_group)

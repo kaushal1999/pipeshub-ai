@@ -336,7 +336,7 @@ class VectorStore(Transformer):
 
             text_chunks = []
             image_chunks = []
-
+            
             for chunk in chunks:
                 if isinstance(chunk, Document):
                     text_chunks.append(chunk)
@@ -484,7 +484,7 @@ class VectorStore(Transformer):
         org_id: str,
         record_id: str,
         virtual_record_id: str = None,
-    ) -> List[Document]:
+    ) -> List[Document]|None:
         """
         Main method to index documents through the entire pipeline.
         Args:
@@ -520,7 +520,7 @@ class VectorStore(Transformer):
         block_groups = block_containers.block_groups
         try:
             if not blocks and not block_groups:
-                raise DocumentProcessingError("No content provided for indexing")
+                return None
 
             # Separate blocks by type
             text_blocks = []
@@ -644,14 +644,15 @@ class VectorStore(Transformer):
                     block_type = block.type
                     if block_type.lower() in ["table"]:
                         table_data = block.data
-                        table_summary = table_data.get("table_summary")
-                        documents_to_embed.append(Document(page_content=table_summary, metadata={
-                            "virtualRecordId": virtual_record_id,
-                            "blockIndex": block.index,
-                            "orgId": org_id,
-                            "isBlock": False,
-                            "isBlockGroup": True,
-                        }))
+                        if table_data:
+                            table_summary = table_data.get("table_summary","")
+                            documents_to_embed.append(Document(page_content=table_summary, metadata={
+                                "virtualRecordId": virtual_record_id,
+                                "blockIndex": block.index,
+                                "orgId": org_id,
+                                "isBlock": False,
+                                "isBlockGroup": True,
+                            }))
                     elif block_type.lower() in ["table_row"]:
                         table_data = block.data
                         table_row_text = table_data.get("row_natural_language_text")

@@ -478,7 +478,7 @@ class RetrievalService:
             limit=limit,
             using="dense"
         ) for query_embedding in query_embeddings]
-        search_results = self.vector_db_service.query_batch_points(
+        search_results = self.vector_db_service.query_nearest_points(
             collection_name=self.collection_name,
             requests=query_requests,
         )

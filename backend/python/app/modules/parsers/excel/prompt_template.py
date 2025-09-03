@@ -21,7 +21,7 @@ table_summary_prompt = ChatPromptTemplate.from_messages(
     [
         (
             "system",
-            "You are an expert data analyst. Provide a concise summary of this table's purpose and content.",
+            "You are an expert data analyst.",
         ),
         (
             "user",

@@ -83,6 +83,7 @@ class ContainerUtils:
         )
         return pipeline
 
+
     async def create_domain_extractor(
         self,
         logger: Logger,

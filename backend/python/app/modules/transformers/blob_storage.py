@@ -33,7 +33,7 @@ class BlobStorage(Transformer):
         # Store the mapping if we have both IDs and arango_service is available
         if document_id and self.arango_service:
             await self.store_virtual_record_mapping(virtual_record_id, document_id)
-
+        
         ctx.record = record
         return ctx
 
@@ -143,7 +143,7 @@ class BlobStorage(Transformer):
                 }
             except Exception as e:
                 self.logger.error("❌ Failed to generate JWT token: %s", str(e))
-                return None
+                raise e
 
             # Get endpoint configuration
             try:
@@ -163,7 +163,7 @@ class BlobStorage(Transformer):
                 self.logger.info("🚀 Storage type: %s", storage_type)
             except Exception as e:
                 self.logger.error("❌ Failed to get endpoint configuration: %s", str(e))
-                return None
+                raise e
 
             if storage_type == "local":
                 try:
@@ -202,25 +202,24 @@ class BlobStorage(Transformer):
                                     error_text = await response.text()
                                     self.logger.error("❌ Failed to upload record. Status: %d, Response: %s",
                                                     response.status, error_text[:200])
-                                return None
+                                raise e
 
                             response_data = await response.json()
                             document_id = response_data.get('_id')
 
                             if not document_id:
                                 self.logger.error("❌ No document ID in upload response")
-                                return None
+                                raise Exception("No document ID in upload response")
 
                             self.logger.info("✅ Successfully uploaded record for document: %s", document_id)
                             return document_id
-
                 except aiohttp.ClientError as e:
                     self.logger.error("❌ Network error during upload process: %s", str(e))
-                    return None
+                    raise e
                 except Exception as e:
                     self.logger.error("❌ Unexpected error during upload process: %s", str(e))
                     self.logger.exception("Detailed error trace:")
-                    return None
+                    raise e
             else:
                 placeholder_data = {
                     "documentName": f"record_{record_id}",
@@ -238,7 +237,7 @@ class BlobStorage(Transformer):
                         document_id = document.get("_id")
                         if not document_id:
                             self.logger.error("❌ No document ID in placeholder response")
-                            return None
+                            raise Exception("No document ID in placeholder response")
 
                         self.logger.info("📄 Created placeholder with ID: %s", document_id)
 
@@ -255,7 +254,7 @@ class BlobStorage(Transformer):
                         signed_url = upload_result.get('signedUrl')
                         if not signed_url:
                             self.logger.error("❌ No signed URL in response for document: %s", document_id)
-                            return None
+                            raise Exception("No signed URL in response for document")
 
                         # Step 3: Upload to signed URL
                         self.logger.info("📤 Uploading record to storage for document: %s", document_id)
@@ -266,16 +265,16 @@ class BlobStorage(Transformer):
 
                 except aiohttp.ClientError as e:
                     self.logger.error("❌ Network error during storage process: %s", str(e))
-                    return None
+                    raise e
                 except Exception as e:
                     self.logger.error("❌ Unexpected error during storage process: %s", str(e))
                     self.logger.exception("Detailed error trace:")
-                    return None
+                    raise e
 
         except Exception as e:
             self.logger.error("❌ Critical error in saving record to storage: %s", str(e))
             self.logger.exception("Detailed error trace:")
-            return None
+            raise e
 
     async def get_document_id_by_virtual_record_id(self, virtual_record_id: str) -> str:
         """
@@ -285,7 +284,7 @@ class BlobStorage(Transformer):
         """
         if not self.arango_service:
             self.logger.error("❌ ArangoService not initialized, cannot get document ID by virtual record ID.")
-            return None
+            raise Exception("ArangoService not initialized, cannot get document ID by virtual record ID.")
 
         try:
             collection_name = CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
@@ -309,7 +308,7 @@ class BlobStorage(Transformer):
             Returns:
                 str: The content of the record if found, else an empty string.
             """
-            self.logger.info("🔍 Retrieving record from storage for external_record_id: %s", virtual_record_id)
+            self.logger.info("🔍 Retrieving record from storage for virtual_record_id: %s", virtual_record_id)
             try:
                 # Generate JWT token for authorization
                 payload = {
@@ -353,11 +352,11 @@ class BlobStorage(Transformer):
                                     async with session.get(signed_url, headers=headers) as resp:
                                         if resp.status == HttpStatusCode.OK.value:
                                             data = await resp.json()
-                            self.logger.info("✅ Successfully retrieved record for virtual_record_id: %s", virtual_record_id)
+                            self.logger.info("✅ Successfully retrieved record for virtual_record_id from blob storage: %s", virtual_record_id)
                             return data.get("record")
                         else:
                             self.logger.error("❌ Failed to retrieve record: status %s, virtual_record_id: %s", resp.status, virtual_record_id)
-                            return None
+                            raise Exception("Failed to retrieve record from storage")
             except Exception as e:
                 self.logger.error("❌ Error retrieving record from storage: %s", str(e))
                 self.logger.exception("Detailed error trace:")

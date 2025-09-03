@@ -359,7 +359,7 @@ class QdrantService(IVectorDBService):
             raise RuntimeError("Client not connected. Call connect() first.")
         self.client.overwrite_payload(collection_name, payload, points)
 
-    def query_batch_points(
+    def query_nearest_points(
         self,
         collection_name: str,
         requests: List[QueryRequest],

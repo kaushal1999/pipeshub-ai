@@ -236,7 +236,7 @@ class BlockContainerIndex(BaseModel):
 class BlockGroup(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid4()))
     index: int = None
-    name: str = Field(description="Name of the block group")
+    name: Optional[str] = Field(description="Name of the block group",default=None)
     type: GroupType = Field(description="Type of the block group")
     parent_index: Optional[int] = Field(description="Index of the parent block group",default=None)
     description: Optional[str] = Field(description="Description of the block group",default=None)
@@ -251,7 +251,7 @@ class BlockGroup(BaseModel):
     file_metadata: Optional[FileMetadata] = None
     link_metadata: Optional[LinkMetadata] = None
     semantic_metadata: Optional[SemanticMetadata] = None
-    children: Optional[List[int]] = None
+    children: Optional[List[BlockContainerIndex]] = None
     data: Optional[Any] = None
     format: DataFormat
 

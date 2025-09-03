@@ -1249,7 +1249,7 @@ class Processor:
             raise
 
     async def process_csv_document(
-        self, recordName, recordId, version, source, orgId, csv_binary, virtual_record_id
+        self, recordName, recordId, version, source, orgId, csv_binary, virtual_record_id, origin
     ) -> None:
         """Process CSV document and extract structured content
 
@@ -1269,13 +1269,13 @@ class Processor:
             # Initialize CSV parser
             self.logger.debug("📊 Processing CSV content")
             parser = self.parsers[ExtensionTypes.CSV.value]
-
+            
             llm, _ = await get_llm(self.config_service)
 
             # Try different encodings to decode binary data
             encodings = ["utf-8", "latin1", "cp1252", "iso-8859-1"]
             csv_result = None
-
+            
             for encoding in encodings:
                 try:
                     self.logger.debug(
@@ -1312,92 +1312,109 @@ class Processor:
             self.logger.info("🎯 Extracting domain metadata")
             if csv_result:
                 # Convert CSV data to text for metadata extraction
-                csv_text = "\n".join(
-                    [
-                        " ".join(str(value) for value in row.values())
-                        for row in csv_result
-                    ]
-                )
+                # csv_text = "\n".join(
+                #     [
+                #         " ".join(str(value) for value in row.values())
+                #         for row in csv_result
+                #     ]
+                # )
+                
+                # try:
+                record = await self.arango_service.get_document(
+                    recordId, CollectionNames.RECORDS.value
+                    )
+                if record is None:
+                    self.logger.error(f"❌ Record {recordId} not found in database")
+                    return
+                record = convert_record_dict_to_record(record)
+                record.virtual_record_id = virtual_record_id
+                
+                block_containers = await parser.get_blocks_from_csv_result(csv_result, recordId, orgId, recordName, version, origin, llm)
+                record.block_containers = block_containers
+                
+                
 
-                try:
-                    self.logger.info("🎯 Extracting metadata from CSV content")
-                    metadata = await self.domain_extractor.extract_metadata(
-                        csv_text, orgId
-                    )
-                    record = await self.domain_extractor.save_metadata_to_db(
-                        orgId, recordId, metadata, virtual_record_id
-                    )
-                    file = await self.arango_service.get_document(
-                        recordId, CollectionNames.FILES.value
-                    )
-                    domain_metadata = {**record, **file}
-                except Exception as e:
-                    self.logger.error(f"❌ Error extracting metadata: {str(e)}")
-                    domain_metadata = None
+                ctx = TransformContext(record=record)
+                pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
+                await pipeline.apply(ctx)
+
+                    # self.logger.info("🎯 Extracting metadata from CSV content")
+                    # metadata = await self.domain_extractor.extract_metadata(
+                    #     csv_text, orgId
+                    # )
+                    # record = await self.domain_extractor.save_metadata_to_db(
+                    #     orgId, recordId, metadata, virtual_record_id
+                    # )
+                    # file = await self.arango_service.get_document(
+                    #     recordId, CollectionNames.FILES.value
+                    # )
+                    # domain_metadata = {**record, **file}
+                # except Exception as e:
+                #     self.logger.error(f"❌ Error extracting metadata: {str(e)}")
+                #     domain_metadata = None
 
             # Format content for output
-            formatted_content = ""
-            numbered_rows = []
-            sentence_data = []
+            # formatted_content = ""
+            # numbered_rows = []
+            # sentence_data = []
 
             # Process rows for formatting
-            self.logger.debug("📝 Processing rows")
-            batch_size = 20  # Define a suitable batch size
-            for i in range(0, len(csv_result), batch_size):
-                batch = csv_result[i : i + batch_size]
-                row_texts = await parser.get_rows_text(llm, batch)
+            # self.logger.debug("📝 Processing rows")
+            # batch_size = 20  # Define a suitable batch size
+            # for i in range(0, len(csv_result), batch_size):
+            #     batch = csv_result[i : i + batch_size]
+            #     row_texts = await parser.get_rows_text(llm, batch)
 
-                for idx, (row, row_text) in enumerate(
-                    zip(batch, row_texts), start=i + 1
-                ):
-                    row_entry = {"number": idx, "content": row, "type": "row"}
-                    numbered_rows.append(row_entry)
-                    formatted_content += f"[{idx}] {json.dumps(row)}\n"
-                    formatted_content += f"Natural Text: {row_text}\n"
+            #     for idx, (row, row_text) in enumerate(
+            #         zip(batch, row_texts), start=i + 1
+            #     ):
+            #         row_entry = {"number": idx, "content": row, "type": "row"}
+            #         numbered_rows.append(row_entry)
+            #         formatted_content += f"[{idx}] {json.dumps(row)}\n"
+            #         formatted_content += f"Natural Text: {row_text}\n"
 
-                    # Add sentence data for indexing
-                    sentence_data.append(
-                        {
-                            "text": row_text,
-                            "metadata": {
-                                **(domain_metadata or {}),
-                                "recordId": recordId,
-                                "blockType": "table_row",
-                                "blockText": json.dumps(row),
-                                "blockNum": [idx],
-                                "virtualRecordId": virtual_record_id,
-                            },
-                        }
-                    )
+            #         # Add sentence data for indexing
+            #         sentence_data.append(
+            #             {
+            #                 "text": row_text,
+            #                 "metadata": {
+            #                     **(domain_metadata or {}),
+            #                     "recordId": recordId,
+            #                     "blockType": "table_row",
+            #                     "blockText": json.dumps(row),
+            #                     "blockNum": [idx],
+            #                     "virtualRecordId": virtual_record_id,
+            #                 },
+            #             }
+            #         )
 
-            # Index sentences if available
-            if sentence_data:
-                self.logger.debug(f"📑 Indexing {len(sentence_data)} sentences")
-                pipeline = self.indexing_pipeline
-                await pipeline.index_documents(sentence_data, merge_documents=False)
+            # # Index sentences if available
+            # if sentence_data:
+            #     self.logger.debug(f"📑 Indexing {len(sentence_data)} sentences")
+            #     pipeline = self.indexing_pipeline
+            #     await pipeline.index_documents(sentence_data, merge_documents=False)
 
-            # Prepare metadata
-            self.logger.debug("📋 Preparing metadata")
-            metadata = {
-                "recordId": recordId,
-                "recordName": recordName,
-                "orgId": orgId,
-                "version": version,
-                "source": source,
-                "domain_metadata": domain_metadata,
-                "row_count": len(csv_result),
-                "column_count": len(csv_result[0]) if csv_result else 0,
-                "columns": list(csv_result[0].keys()) if csv_result else [],
-            }
+            # # Prepare metadata
+            # self.logger.debug("📋 Preparing metadata")
+            # metadata = {
+            #     "recordId": recordId,
+            #     "recordName": recordName,
+            #     "orgId": orgId,
+            #     "version": version,
+            #     "source": source,
+            #     "domain_metadata": domain_metadata,
+            #     "row_count": len(csv_result),
+            #     "column_count": len(csv_result[0]) if csv_result else 0,
+            #     "columns": list(csv_result[0].keys()) if csv_result else [],
+            # }
 
             self.logger.info("✅ CSV processing completed successfully")
-            return {
-                "csv_result": csv_result,
-                "formatted_content": formatted_content,
-                "numbered_rows": numbered_rows,
-                "metadata": metadata,
-            }
-
+            # return {
+            #     "csv_result": csv_result,
+            #     "formatted_content": formatted_content,
+            #     "numbered_rows": numbered_rows,
+            #     "metadata": metadata,
+            # }
         except Exception as e:
             self.logger.error(f"❌ Error processing CSV document: {str(e)}")
             raise

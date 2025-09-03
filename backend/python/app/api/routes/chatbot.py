@@ -1,6 +1,8 @@
+import json
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 from uuid import uuid4
 
+from app.utils.mimetype_to_extension import get_extension_from_mimetype
 from dependency_injector.wiring import inject
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -654,24 +656,29 @@ async def askAI(
         raise HTTPException(status_code=400, detail=str(e))
 
 async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: BlobStorage, org_id: str, is_multimodal_llm: bool, virtual_record_id_to_result: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+    
     flattened_results = []
     seen_chunks = set()
     chunk_index = 1
+    adjacent_chunks = {}
     for result in result_set:
         virtual_record_id = result["metadata"].get("virtualRecordId")
         meta = result.get("metadata")
         index = meta.get("blockIndex")
 
-
-
         if virtual_record_id not in virtual_record_id_to_result:
             await get_blocks(meta,virtual_record_id,virtual_record_id_to_result,blob_store,org_id)
+        
+        # Ensure adjacent_chunks is initialized for this virtual_record_id
+        if virtual_record_id not in adjacent_chunks:
+            adjacent_chunks[virtual_record_id] = []
 
         record,blockNum_to_blockIndex = virtual_record_id_to_result[virtual_record_id]
 
         if blockNum_to_blockIndex:
+            print("i am blockNum_to_blockIndex")
             index = blockNum_to_blockIndex[f"{meta.get('point_id')}"]
-
+        
         chunk_id = f"{virtual_record_id}-{index}"
         if chunk_id in seen_chunks:
             continue
@@ -691,6 +698,10 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
         result["block_type"] = block_type
         if block_type == BlockType.TEXT.value and 'isBlockGroup' in meta:
             result["content"] = block.get("data","")
+            if blockNum_to_blockIndex is None:
+                adjacent_chunks[virtual_record_id].append(index-1)
+                adjacent_chunks[virtual_record_id].append(index+1)
+          
         elif block_type == BlockType.IMAGE.value and is_multimodal_llm:
             data = block.get("data")
             image_uri = data.get("uri") if isinstance(data, dict) else (data if isinstance(data, str) else None)
@@ -698,6 +709,9 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                 result["content"] = image_uri
             else:
                 result["content"] = ""
+            if blockNum_to_blockIndex is None:  
+                adjacent_chunks[virtual_record_id].append(index-1)
+                adjacent_chunks[virtual_record_id].append(index+1)
         elif block_type == BlockType.TABLE_ROW.value and 'isBlockGroup' in meta:
             block_group_index = block.get("parent_index")
             block_group = block_groups[block_group_index]
@@ -705,15 +719,25 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
             table_markdown = table_data.get("table_markdown","")
             result["content"] = table_markdown
             children = block_group.get("children")
-            first_block_index = children[0]
+            first_block_index = children[0].get("block_index") if children and len(children) > 0 else None
             result["block_index"] = first_block_index
+            if blockNum_to_blockIndex is None and first_block_index is not None:
+                adjacent_chunks[virtual_record_id].append(first_block_index-1)
+                last_block_index = children[-1].get("block_index") if children and len(children) > 0 else None
+                if last_block_index is not None:
+                    adjacent_chunks[virtual_record_id].append(last_block_index+1)
         elif block_type == GroupType.TABLE.value and 'isBlockGroup' in meta:
             table_data = block.get("data",{})
             table_markdown = table_data.get("table_markdown","")
             result["content"] = table_markdown
             children = block.get("children")
-            first_block_index = children[0]
+            first_block_index = children[0].get("block_index") if children and len(children) > 0 else None
             result["block_index"] = first_block_index
+            if blockNum_to_blockIndex is None and first_block_index is not None:
+                adjacent_chunks[virtual_record_id].append(first_block_index-1)
+                last_block_index = children[-1].get("block_index") if children and len(children) > 0 else None
+                if last_block_index is not None:
+                    adjacent_chunks[virtual_record_id].append(last_block_index+1)
 
         result["chunk_index"] = chunk_index
         chunk_index += 1
@@ -724,6 +748,32 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
         result["metadata"] = enhanced_metadata
 
         flattened_results.append(result)
+    
+    for virtual_record_id,adjacent_chunks_list in adjacent_chunks.items():
+        for index in adjacent_chunks_list:
+            chunk_id = f"{virtual_record_id}-{index}"
+            if chunk_id in seen_chunks:
+                continue
+            seen_chunks.add(chunk_id)
+            record = virtual_record_id_to_result[virtual_record_id][0]
+            blocks  = record.get("block_containers",{}).get("blocks",[])
+            if index < len(blocks) and index >= 0:
+                block = blocks[index]
+                block_type = block.get("type")
+                if block_type == BlockType.TEXT.value:
+                    block_text = block.get("data","")
+                    enhanced_metadata = get_enhanced_metadata(record,block,{})
+                    flattened_results.append({
+                        "content": block_text,
+                        "block_type": block_type,
+                        "metadata": enhanced_metadata,
+                        "chunk_index": chunk_index,
+                        "virtual_record_id": virtual_record_id,
+                        "block_index": index,
+                        "citationType": "vectordb|document",
+                    })
+                    chunk_index += 1
+
 
     return flattened_results
 
@@ -752,8 +802,8 @@ def get_enhanced_metadata(record:Dict[str, Any],block:Dict[str, Any],meta:Dict[s
                 block_text = ""
 
             extension = meta.get("extension")
-            if extension is None and record.get("mime_type")=="application/pdf":
-                extension = "pdf"
+            if extension is None:
+                extension = get_extension_from_mimetype(record.get("mime_type"))
 
             enhanced_metadata = {
                         "orgId": record.get("orgId", ""),
@@ -806,9 +856,11 @@ async def get_blocks(meta: Dict[str, Any],virtual_record_id: str,virtual_record_
         record = await blob_store.get_record_from_storage(virtual_record_id=virtual_record_id, org_id=org_id)
         if record:
             virtual_record_id_to_result[virtual_record_id] = (record,None)
+            print("i am hereeeeeeeeeeeeeeeeeeeeeeeeeeeeee")
         else:
             record,blockNum_to_blockIndex = await create_record_from_vector_metadata(meta,org_id,virtual_record_id,blob_store)
             virtual_record_id_to_result[virtual_record_id] = (record,blockNum_to_blockIndex)
+            print("i am ccccccccccccccccccccccccccccccchereeeeeeeeeeeeeeeeeeeeeeeeeeeeee")
     except Exception as e:
         raise e
 

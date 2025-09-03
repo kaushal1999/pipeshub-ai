@@ -15,5 +15,4 @@ class SinkOrchestrator(Transformer):
         await self.arango.apply(ctx)
         await self.vector_store.apply(ctx)
         await self.blob_storage.apply(ctx)
-
         return ctx

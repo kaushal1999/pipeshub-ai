@@ -433,7 +433,8 @@ class EventProcessor:
                     source=connector,
                     orgId=org_id,
                     csv_binary=file_content,
-                    virtual_record_id = virtual_record_id
+                    virtual_record_id = virtual_record_id,
+                    origin=origin,
                 )
 
             elif extension == ExtensionTypes.HTML.value:
