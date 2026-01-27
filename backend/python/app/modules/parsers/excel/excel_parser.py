@@ -3,7 +3,6 @@ import io
 import json
 import os
 import re
-import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -32,9 +31,8 @@ from app.modules.parsers.excel.prompt_template import (
     ExcelHeaderDetection,
     RowDescriptions,
     TableHeaders,
-    excel_header_generation_prompt,
     excel_header_detection_prompt,
-    prompt,
+    excel_header_generation_prompt,
     row_text_prompt,
     sheet_summary_prompt,
     table_summary_prompt,
@@ -43,7 +41,9 @@ from app.utils.indexing_helpers import generate_simple_row_text
 from app.utils.streaming import invoke_with_structured_output_and_reflection
 
 # Module-level constants for Excel processing (mirror CSV parser)
-NUM_SAMPLE_ROWS = 5  # Number of representative sample rows to select for header generation
+NUM_SAMPLE_ROWS = (
+    5  # Number of representative sample rows to select for header generation
+)
 MAX_HEADER_GENERATION_ROWS = 10  # Maximum number of rows to use for header generation
 MAX_HEADER_DETECTION_ROWS = 4  # Check first 4 rows for multi-row headers
 MIN_ROWS_FOR_HEADER_ANALYSIS = 2  # Minimum number of rows required for header analysis
@@ -67,24 +67,24 @@ BUILTIN_DATE_FORMATS = {
 def format_excel_datetime(dt_value: Any, number_format: str) -> Any:
     """
     Apply Excel number format to datetime value.
-    
+
     Converts Python datetime objects to formatted strings matching Excel display format.
     Falls back to ISO format for unrecognized formats.
-    
+
     Args:
         dt_value: The cell value (may or may not be a datetime)
         number_format: The Excel number format code (e.g., "mmm-yyyy", "dd-mmm-yy")
-    
+
     Returns:
         Formatted string if datetime with valid format, otherwise original value
     """
     if not isinstance(dt_value, datetime):
         return dt_value
-    
+
     if not number_format or number_format == "General":
         # No specific format, use ISO format as fallback
         return dt_value.isoformat()
-    
+
     # Convert Excel format to Python strftime format
     try:
         # Handle built-in numeric format codes
@@ -92,130 +92,161 @@ def format_excel_datetime(dt_value: Any, number_format: str) -> Any:
             format_code = int(number_format)
             if format_code in BUILTIN_DATE_FORMATS:
                 number_format = BUILTIN_DATE_FORMATS[format_code]
-        
+
         # Determine if format contains time components (for context-sensitive parsing)
-        has_time = any(x in number_format.lower() for x in ['h:', ':mm', 'h:mm', 'hh:', 'am/pm', 'a/p'])
-        has_am_pm = 'am/pm' in number_format.lower() or 'a/p' in number_format.lower()
-        
+        has_time = any(
+            x in number_format.lower()
+            for x in ["h:", ":mm", "h:mm", "hh:", "am/pm", "a/p"]
+        )
+        has_am_pm = "am/pm" in number_format.lower() or "a/p" in number_format.lower()
+
         python_format = number_format
-        
+
         # Map Excel format codes to Python strftime equivalents
         # Process in specific order to avoid partial replacements
         # Use regex with word boundaries or specific patterns to avoid double-replacement
-        
+
         # 1. Handle full month/day names first (longest matches)
         python_format = python_format.replace("mmmm", "%B")  # Full month name
         python_format = python_format.replace("dddd", "%A")  # Full day name
-        
+
         # 2. Handle abbreviated names
-        python_format = python_format.replace("mmm", "%b")   # Abbreviated month
-        python_format = python_format.replace("ddd", "%a")   # Abbreviated day
-        
+        python_format = python_format.replace("mmm", "%b")  # Abbreviated month
+        python_format = python_format.replace("ddd", "%a")  # Abbreviated day
+
         # 3. Handle years
         python_format = python_format.replace("yyyy", "%Y")  # 4-digit year
-        python_format = python_format.replace("yy", "%y")    # 2-digit year
-        
+        python_format = python_format.replace("yy", "%y")  # 2-digit year
+
         # 4. Handle AM/PM (before processing hours to avoid conflicts)
-        python_format = re.sub(r'AM/PM', '%p', python_format, flags=re.IGNORECASE)
-        python_format = re.sub(r'A/P', '%p', python_format, flags=re.IGNORECASE)
-        
+        python_format = re.sub(r"AM/PM", "%p", python_format, flags=re.IGNORECASE)
+        python_format = re.sub(r"A/P", "%p", python_format, flags=re.IGNORECASE)
+
         # 5. Handle hours (context-sensitive: with/without AM/PM)
         # Use regex to match 'hh' or 'h' not already part of a % code
-        if 'hh' in python_format.lower():
+        if "hh" in python_format.lower():
             if has_am_pm:
-                python_format = re.sub(r'hh', '%I', python_format, flags=re.IGNORECASE)  # 12-hour
+                python_format = re.sub(
+                    r"hh", "%I", python_format, flags=re.IGNORECASE
+                )  # 12-hour
             else:
-                python_format = re.sub(r'hh', '%H', python_format, flags=re.IGNORECASE)  # 24-hour
-        
+                python_format = re.sub(
+                    r"hh", "%H", python_format, flags=re.IGNORECASE
+                )  # 24-hour
+
         # Single 'h' - must not be part of already-replaced format code
         # Match 'h' that's not preceded by % and not followed by %
-        if re.search(r'(?<!%)h(?![a-zA-Z])', python_format, flags=re.IGNORECASE):
+        if re.search(r"(?<!%)h(?![a-zA-Z])", python_format, flags=re.IGNORECASE):
             if has_am_pm:
-                python_format = re.sub(r'(?<!%)h(?![a-zA-Z])', '%I', python_format, flags=re.IGNORECASE)
+                python_format = re.sub(
+                    r"(?<!%)h(?![a-zA-Z])", "%I", python_format, flags=re.IGNORECASE
+                )
             else:
-                python_format = re.sub(r'(?<!%)h(?![a-zA-Z])', '%H', python_format, flags=re.IGNORECASE)
-        
+                python_format = re.sub(
+                    r"(?<!%)h(?![a-zA-Z])", "%H", python_format, flags=re.IGNORECASE
+                )
+
         # 6. Handle seconds (ss before single s)
         python_format = python_format.replace("ss", "%S")
         # Single 's' only if not part of %S or other % code
-        python_format = re.sub(r'(?<!%)s(?![a-zA-Z])', '%S', python_format)
-        
+        python_format = re.sub(r"(?<!%)s(?![a-zA-Z])", "%S", python_format)
+
         # 7. Handle 'mm' - could be month or minute (process before single m/d)
-        if 'mm' in python_format:
+        if "mm" in python_format:
             if has_time:
                 # In time context, check if 'mm' is after ':' (indicating minutes)
-                python_format = re.sub(r':mm', ':%M', python_format)
-                python_format = re.sub(r'mm:', '%M:', python_format)
+                python_format = re.sub(r":mm", ":%M", python_format)
+                python_format = re.sub(r"mm:", "%M:", python_format)
                 # If 'mm' still exists in time format, assume minutes
-                if 'mm' in python_format:
-                    python_format = python_format.replace('mm', '%M')
+                if "mm" in python_format:
+                    python_format = python_format.replace("mm", "%M")
             else:
                 # In date-only context, 'mm' is month
-                python_format = python_format.replace('mm', '%m')
-        
+                python_format = python_format.replace("mm", "%m")
+
         # 8. Handle 'dd' - day with leading zero (before single d)
         python_format = python_format.replace("dd", "%d")
-        
+
         # 9. Handle single 'd' - day without leading zero
         # Only match 'd' that's not part of a % code
-        if re.search(r'(?<!%)d(?![a-zA-Z])', python_format):
-            python_format = re.sub(r'(?<!%)d(?![a-zA-Z])', '%d', python_format)
-        
+        if re.search(r"(?<!%)d(?![a-zA-Z])", python_format):
+            python_format = re.sub(r"(?<!%)d(?![a-zA-Z])", "%d", python_format)
+
         # 10. Handle single 'm' - month or minute (context-dependent)
         # Only match 'm' that's not part of a % code
         # Strategy: 'm' before time separators (like ':') is month, 'm' after ':' is minute
-        if re.search(r'(?<!%)m(?![a-zA-Z])', python_format):
+        if re.search(r"(?<!%)m(?![a-zA-Z])", python_format):
             if has_time:
                 # Split on time-related patterns to identify date vs time context
                 # 'm' before ':' or between '/' and ':' is month
                 # 'm' after ':' or between ':' and other chars is minute
-                
+
                 # First replace 'm' that appears after ':' with minute
-                python_format = re.sub(r'(?<=:)(?<!%)m(?![a-zA-Z])', '%M', python_format)
-                
+                python_format = re.sub(
+                    r"(?<=:)(?<!%)m(?![a-zA-Z])", "%M", python_format
+                )
+
                 # Then replace any remaining 'm' with month (must be in date part)
-                python_format = re.sub(r'(?<!%)m(?![a-zA-Z])', '%m', python_format)
+                python_format = re.sub(r"(?<!%)m(?![a-zA-Z])", "%m", python_format)
             else:
                 # In date-only context, 'm' is month
-                python_format = re.sub(r'(?<!%)m(?![a-zA-Z])', '%m', python_format)
-        
+                python_format = re.sub(r"(?<!%)m(?![a-zA-Z])", "%m", python_format)
+
         # Apply the format
         formatted_value = dt_value.strftime(python_format)
-        
+
         # Post-process to handle format nuances
         # 1. Strip leading zeros from single-digit representations
-        
+
         # Check if original format had single 'd' (not 'dd')
-        if re.search(r'(?<!d)d(?!d)', number_format.lower()):
+        if re.search(r"(?<!d)d(?!d)", number_format.lower()):
             # Strip leading zero from day (e.g., "05" -> "5")
             # Match day numbers with leading zero (01-09) at word boundaries
-            formatted_value = re.sub(r'(?<![0-9])0([1-9])(?=[^0-9]|$)', r'\1', formatted_value)
-        
+            formatted_value = re.sub(
+                r"(?<![0-9])0([1-9])(?=[^0-9]|$)", r"\1", formatted_value
+            )
+
         # Check if original format had single 'm' for month (not 'mm', not in time context)
-        if not has_time and re.search(r'(?<!m)m(?!m)', number_format.lower()):
+        if not has_time and re.search(r"(?<!m)m(?!m)", number_format.lower()):
             # Strip leading zero from month (e.g., "01" -> "1")
-            formatted_value = re.sub(r'(?<![0-9])0([1-9])(?=[^0-9]|$)', r'\1', formatted_value)
-        
+            formatted_value = re.sub(
+                r"(?<![0-9])0([1-9])(?=[^0-9]|$)", r"\1", formatted_value
+            )
+
         # Check if original format had single 'h' for hours (not 'hh')
-        if re.search(r'(?<!h)h(?!h)', number_format.lower()):
+        if re.search(r"(?<!h)h(?!h)", number_format.lower()):
             # Strip leading zero from hours (e.g., "02" -> "2")
             # This handles both 12-hour and 24-hour formats
-            formatted_value = re.sub(r'(?<![0-9])0([1-9])(?=:)', r'\1', formatted_value)
-        
+            formatted_value = re.sub(r"(?<![0-9])0([1-9])(?=:)", r"\1", formatted_value)
+
         # Excel typically uses lowercase for abbreviated months in formats like 'mmm-yyyy'
         # Check if original format has lowercase 'mmm' (3-letter month)
-        if 'mmm' in number_format.lower() and 'mmmm' not in number_format.lower():
+        if "mmm" in number_format.lower() and "mmmm" not in number_format.lower():
             # Find and replace month abbreviations with lowercase
             # Python's %b produces capitalized month names (Jan, Feb, etc.)
-            month_names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 
-                          'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+            month_names = [
+                "Jan",
+                "Feb",
+                "Mar",
+                "Apr",
+                "May",
+                "Jun",
+                "Jul",
+                "Aug",
+                "Sep",
+                "Oct",
+                "Nov",
+                "Dec",
+            ]
             for month_name in month_names:
                 if month_name in formatted_value:
-                    formatted_value = formatted_value.replace(month_name, month_name.lower(), 1)
+                    formatted_value = formatted_value.replace(
+                        month_name, month_name.lower(), 1
+                    )
                     break
-        
+
         return formatted_value
-        
+
     except Exception:
         # If formatting fails, fall back to ISO format
         return dt_value.isoformat()
@@ -246,7 +277,9 @@ class ExcelParser:
         self.file_binary = file_binary
         if self.file_binary:
             self.workbook = load_workbook(io.BytesIO(file_binary), data_only=True)
-            self.logger.info(f"Workbook loaded successfully with {len(self.workbook.sheetnames)} sheets: {self.workbook.sheetnames}")
+            self.logger.info(
+                f"Workbook loaded successfully with {len(self.workbook.sheetnames)} sheets: {self.workbook.sheetnames}"
+            )
 
     async def create_blocks(self, llm: BaseChatModel) -> BlocksContainer:
         """Create blocks from loaded workbook (involves LLM calls).
@@ -257,7 +290,9 @@ class ExcelParser:
         self.logger.info("Starting block creation from workbook with LLM")
         try:
             result = await self.get_blocks_from_workbook(llm)
-            self.logger.info(f"Block creation completed. Generated {len(result.blocks)} blocks and {len(result.block_groups)} block groups")
+            self.logger.info(
+                f"Block creation completed. Generated {len(result.blocks)} blocks and {len(result.block_groups)} block groups"
+            )
             return result
         finally:
             if self.workbook:
@@ -286,7 +321,7 @@ class ExcelParser:
         try:
             self.load_workbook_from_binary(file_binary)
             result = await self.get_blocks_from_workbook(llm)
-            self.logger.info(f"Excel file parsing completed successfully")
+            self.logger.info("Excel file parsing completed successfully")
             return result
 
         except Exception as e:
@@ -311,7 +346,9 @@ class ExcelParser:
             # Extract headers from first row
             first_row = next(sheet.iter_rows(min_row=1, max_row=1))
             sheet_data["headers"] = [cell.value for cell in first_row]
-            self.logger.info(f"Extracted {len(sheet_data['headers'])} headers from first row")
+            self.logger.info(
+                f"Extracted {len(sheet_data['headers'])} headers from first row"
+            )
 
             # Start from second row
             for row_idx, row in enumerate(sheet.iter_rows(min_row=2), 2):
@@ -379,11 +416,15 @@ class ExcelParser:
 
                 sheet_data["data"].append(row_data)
 
-            self.logger.info(f"Processed {len(sheet_data['data'])} data rows from sheet: {sheet.title}")
+            self.logger.info(
+                f"Processed {len(sheet_data['data'])} data rows from sheet: {sheet.title}"
+            )
             return sheet_data
 
         except Exception as e:
-            self.logger.error(f"Error processing sheet {sheet.title}: {e}", exc_info=True)
+            self.logger.error(
+                f"Error processing sheet {sheet.title}: {e}", exc_info=True
+            )
             raise
 
     async def find_tables(self, sheet, llm: BaseChatModel) -> List[Dict[str, Any]]:
@@ -395,7 +436,9 @@ class ExcelParser:
 
             async def get_table(start_row: int, start_col: int) -> Dict[str, Any]:
                 """Extract a table starting from (start_row, start_col) with intelligent header detection."""
-                self.logger.info(f"Extracting table starting at row={start_row}, col={start_col}")
+                self.logger.info(
+                    f"Extracting table starting at row={start_row}, col={start_col}"
+                )
                 # Step 1: Find table boundaries (max_row, max_col)
                 max_col = start_col
                 for col in range(start_col, sheet.max_column + 1):
@@ -409,8 +452,8 @@ class ExcelParser:
                     if not has_data:
                         break
 
-                max_row = start_row+1
-                for row in range(start_row+2, sheet.max_row + 1):
+                max_row = start_row
+                for row in range(start_row + 1, sheet.max_row + 1):
                     has_data = False
                     for col in range(start_col, max_col + 1):
                         cell = sheet.cell(row=row, column=col)
@@ -420,11 +463,15 @@ class ExcelParser:
                             break
                     if not has_data:
                         break
-                
+
                 # Step 1.5: Expand left to include additional columns
-                for col in range(start_col - 1, 0, -1):  # Go left from start_col to column 1
+                for col in range(
+                    start_col - 1, 0, -1
+                ):  # Go left from start_col to column 1
                     has_data = False
-                    for row in range(start_row, max_row + 1):  # Check within rectangular region
+                    for row in range(
+                        start_row, max_row + 1
+                    ):  # Check within rectangular region
                         cell = sheet.cell(row=row, column=col)
                         if cell.value is not None:
                             has_data = True
@@ -432,13 +479,17 @@ class ExcelParser:
                             break
                     if not has_data:
                         break  # Found empty column, stop expanding left
-                
+
                 column_count = max_col - start_col + 1
-                self.logger.info(f"Table boundaries: rows [{start_row}-{max_row}], cols [{start_col}-{max_col}], column_count={column_count}")
+                self.logger.info(
+                    f"Table boundaries: rows [{start_row}-{max_row}], cols [{start_col}-{max_col}], column_count={column_count}"
+                )
 
                 # Step 2: Extract first few rows for header detection
                 first_rows = []
-                for row_idx in range(start_row, min(start_row + MAX_HEADER_DETECTION_ROWS, max_row + 1)):
+                for row_idx in range(
+                    start_row, min(start_row + MAX_HEADER_DETECTION_ROWS, max_row + 1)
+                ):
                     row_values = []
                     for col in range(start_col, max_col + 1):
                         cell = sheet.cell(row=row_idx, column=col)
@@ -448,7 +499,9 @@ class ExcelParser:
 
                 # Step 3: Detect headers with LLM
                 detection = await self.detect_excel_headers_with_llm(first_rows, llm)
-                self.logger.info(f"Header detection result: has_headers={detection.has_headers}, num_header_rows={detection.num_header_rows}, confidence={detection.confidence}")
+                self.logger.info(
+                    f"Header detection result: has_headers={detection.has_headers}, num_header_rows={detection.num_header_rows}, confidence={detection.confidence}"
+                )
 
                 # Step 4: Determine headers and data start row
                 headers = []
@@ -464,23 +517,31 @@ class ExcelParser:
                         visited_cells.add((start_row, col))
                 elif detection.has_headers and detection.num_header_rows > 1:
                     # Multi-row headers: concatenate them into single-row headers
-                    multirow_headers = first_rows[:detection.num_header_rows]
+                    multirow_headers = first_rows[: detection.num_header_rows]
                     data_start_row = start_row + detection.num_header_rows
-                    self.logger.info(f"Multi-row headers detected ({detection.num_header_rows} rows), will concatenate into single-row headers")
-                    
+                    self.logger.info(
+                        f"Multi-row headers detected ({detection.num_header_rows} rows), will concatenate into single-row headers"
+                    )
+
                     # Mark header cells as visited
-                    for row_idx in range(start_row, start_row + detection.num_header_rows):
+                    for row_idx in range(
+                        start_row, start_row + detection.num_header_rows
+                    ):
                         for col in range(start_col, max_col + 1):
                             visited_cells.add((row_idx, col))
-                    
+
                     # Concatenate multi-row headers directly (no LLM)
-                    headers = self._concatenate_multirow_headers(multirow_headers, column_count)
+                    headers = self._concatenate_multirow_headers(
+                        multirow_headers, column_count
+                    )
                     self.logger.info(f"Concatenated headers: {headers}")
                 else:
                     # No headers: all rows are data, generate headers from data
                     data_start_row = start_row
                     sample_start = start_row
-                    self.logger.info("No headers detected, will generate headers from data")
+                    self.logger.info(
+                        "No headers detected, will generate headers from data"
+                    )
 
                     # Extract all rows for sampling
                     all_rows = []
@@ -493,32 +554,46 @@ class ExcelParser:
                         all_rows.append(row_values)
 
                     # Select representative sample rows
-                    sample_rows = self._select_representative_sample_rows(all_rows, MAX_HEADER_GENERATION_ROWS)
-                    self.logger.info(f"Selected {len(sample_rows)} representative sample rows for header generation")
-                    
+                    sample_rows = self._select_representative_sample_rows(
+                        all_rows, MAX_HEADER_GENERATION_ROWS
+                    )
+                    self.logger.info(
+                        f"Selected {len(sample_rows)} representative sample rows for header generation"
+                    )
+
                     # Generate headers with LLM
-                    headers = await self.generate_excel_headers_with_llm(sample_rows, column_count, llm)
+                    headers = await self.generate_excel_headers_with_llm(
+                        sample_rows, column_count, llm
+                    )
                     self.logger.info(f"Generated headers: {headers}")
 
                 # Normalize headers to match column count
                 if headers:
                     # Replace None values in existing headers
                     for i in range(len(headers)):
-                        if headers[i] is None or (isinstance(headers[i], str) and not headers[i].strip()):
+                        if headers[i] is None or (
+                            isinstance(headers[i], str) and not headers[i].strip()
+                        ):
                             headers[i] = f"Column_{i + 1}"
-                            
+
                     # Pad if too short
                     if len(headers) < column_count:
-                        self.logger.info(f"Padding headers from {len(headers)} to {column_count}")
+                        self.logger.info(
+                            f"Padding headers from {len(headers)} to {column_count}"
+                        )
                         for i in range(len(headers) + 1, column_count + 1):
                             headers.append(f"Column_{i}")
-                    
+
                     # Truncate if too long (edge case)
                     elif len(headers) > column_count:
-                        self.logger.warning(f"Truncating headers from {len(headers)} to {column_count}")
+                        self.logger.warning(
+                            f"Truncating headers from {len(headers)} to {column_count}"
+                        )
                         headers = headers[:column_count]
-                    
-                    self.logger.info(f"Normalized headers ({len(headers)} total): {headers}")
+
+                    self.logger.info(
+                        f"Normalized headers ({len(headers)} total): {headers}"
+                    )
 
                 # Handle empty headers case
                 if not headers or all(h is None for h in headers):
@@ -559,21 +634,24 @@ class ExcelParser:
                     cell = sheet.cell(row=row, column=col)
 
                     # Possible table start detection (cell has data and not visited)
-                    if (
-                        cell.value
-                        and (row, col) not in visited_cells
-                    ):
-                        self.logger.info(f"Found potential table start at ({row}, {col}) with value: {cell.value}")
+                    if cell.value and (row, col) not in visited_cells:
+                        self.logger.info(
+                            f"Found potential table start at ({row}, {col}) with value: {cell.value}"
+                        )
                         table = await get_table(row, col)
                         if table["data"]:  # Only add if table has data
                             tables.append(table)
-                            self.logger.info(f"Table added with {len(table['data'])} rows and {len(table['headers'])} columns")
+                            self.logger.info(
+                                f"Table added with {len(table['data'])} rows and {len(table['headers'])} columns"
+                            )
 
             self.logger.info(f"Found {len(tables)} tables in sheet: {sheet.title}")
             return tables
 
         except Exception as e:
-            self.logger.error(f"Error finding tables in sheet {sheet.title}: {e}", exc_info=True)
+            self.logger.error(
+                f"Error finding tables in sheet {sheet.title}: {e}", exc_info=True
+            )
             raise
 
     def _process_cell(self, cell, header, row, col) -> Dict[str, Any]:
@@ -591,8 +669,12 @@ class ExcelParser:
                         )
                         merged_value = top_left_cell.value
                         # Apply datetime formatting if applicable
-                        if isinstance(merged_value, datetime) and hasattr(top_left_cell, 'number_format'):
-                            merged_value = format_excel_datetime(merged_value, top_left_cell.number_format)
+                        if isinstance(merged_value, datetime) and hasattr(
+                            top_left_cell, "number_format"
+                        ):
+                            merged_value = format_excel_datetime(
+                                merged_value, top_left_cell.number_format
+                            )
                         break
 
                 return {
@@ -609,9 +691,9 @@ class ExcelParser:
             # If not a merged cell, process normally.
             # Apply datetime formatting if the cell contains a datetime value
             cell_value = cell.value
-            if isinstance(cell_value, datetime) and hasattr(cell, 'number_format'):
+            if isinstance(cell_value, datetime) and hasattr(cell, "number_format"):
                 cell_value = format_excel_datetime(cell_value, cell.number_format)
-            
+
             return {
                 "value": cell_value,  # Now contains formatted string for datetime values
                 "header": header,
@@ -639,7 +721,9 @@ class ExcelParser:
                 },
             }
         except Exception as e:
-            self.logger.error(f"Error processing cell at ({row}, {col}): {e}", exc_info=True)
+            self.logger.error(
+                f"Error processing cell at ({row}, {col}): {e}", exc_info=True
+            )
             raise
 
     def _count_empty_values(self, row: Dict[str, Any]) -> int:
@@ -668,7 +752,11 @@ class ExcelParser:
 
         for idx, row in enumerate(data_rows):
             # Count empty values in this row
-            empty_count = sum(1 for value in row if value is None or (isinstance(value, str) and value.strip() == ""))
+            empty_count = sum(
+                1
+                for value in row
+                if value is None or (isinstance(value, str) and value.strip() == "")
+            )
 
             if empty_count == 0:
                 # Perfect row with no empty values
@@ -692,7 +780,9 @@ class ExcelParser:
 
         return selected_rows
 
-    def _convert_rows_to_strings(self, rows: List[List[Any]], num_rows: int = 4) -> List[List[str]]:
+    def _convert_rows_to_strings(
+        self, rows: List[List[Any]], num_rows: int = 4
+    ) -> List[List[str]]:
         """
         Convert multiple rows to lists of strings for LLM prompts.
 
@@ -725,13 +815,15 @@ class ExcelParser:
         self.logger.info(f"Detecting headers with LLM for {len(first_rows)} rows")
         try:
             if len(first_rows) < MIN_ROWS_FOR_HEADER_ANALYSIS:
-                self.logger.warning(f"Only {len(first_rows)} rows available, insufficient for header analysis (min: {MIN_ROWS_FOR_HEADER_ANALYSIS})")
+                self.logger.warning(
+                    f"Only {len(first_rows)} rows available, insufficient for header analysis (min: {MIN_ROWS_FOR_HEADER_ANALYSIS})"
+                )
                 # Not enough rows to analyze, assume single-row headers exist
                 return ExcelHeaderDetection(
                     has_headers=True,
                     num_header_rows=1,
                     confidence="low",
-                    reasoning="Insufficient rows for analysis, defaulting to single-row headers"
+                    reasoning="Insufficient rows for analysis, defaulting to single-row headers",
                 )
 
             # Prepare rows for prompt (convert to strings for display)
@@ -750,41 +842,50 @@ class ExcelParser:
             )
 
             if parsed_response is not None:
-                    self.logger.info(f"LLM header detection successful: {parsed_response.reasoning}")
+                self.logger.info(
+                    f"LLM header detection successful: {parsed_response.reasoning}"
+                )
                 # Validate num_header_rows is sensible
                 if parsed_response.num_header_rows < 0:
                     parsed_response.num_header_rows = 0
-                
+
                 # If has_headers is True but num_header_rows is 0, correct it
                 if parsed_response.has_headers and parsed_response.num_header_rows == 0:
                     parsed_response.num_header_rows = 1
-                
+
                 # If has_headers is False, ensure num_header_rows is 0
                 if not parsed_response.has_headers:
                     parsed_response.num_header_rows = 0
-                
+
                 return parsed_response
 
             # Fallback: assume single-row headers exist if LLM fails
-            self.logger.warning("Header detection LLM call failed, defaulting to single-row headers")
+            self.logger.warning(
+                "Header detection LLM call failed, defaulting to single-row headers"
+            )
             return ExcelHeaderDetection(
-                has_headers=False,
-                num_header_rows=0,
+                has_headers=True,
+                num_header_rows=1,
                 confidence="low",
-                reasoning="LLM call failed, defaulting to single-row headers"
+                reasoning="LLM call failed, defaulting to single-row headers",
             )
 
         except Exception as e:
-            self.logger.warning(f"Error in Excel header detection: {e}, defaulting to single-row headers")
+            self.logger.warning(
+                f"Error in Excel header detection: {e}, defaulting to single-row headers"
+            )
             return ExcelHeaderDetection(
-                has_headers=False,
-                num_header_rows=0,
+                has_headers=True,
+                num_header_rows=1,
                 confidence="low",
-                reasoning=f"Error occurred: {str(e)}, defaulting to single-row headers"
+                reasoning=f"Error occurred: {str(e)}, defaulting to single-row headers",
             )
 
     async def generate_excel_headers_with_llm(
-        self, sample_rows: List[Tuple[int, List[Any], int]], column_count: int, llm: BaseChatModel
+        self,
+        sample_rows: List[Tuple[int, List[Any], int]],
+        column_count: int,
+        llm: BaseChatModel,
     ) -> List[str]:
         """
         Generate descriptive headers from sample data using LLM.
@@ -801,8 +902,10 @@ class ExcelParser:
         Returns:
             List of generated header names (always exactly column_count items)
         """
-        self.logger.info(f"Generating headers with LLM for {column_count} columns using {len(sample_rows)} sample rows")
-        
+        self.logger.info(
+            f"Generating headers with LLM for {column_count} columns using {len(sample_rows)} sample rows"
+        )
+
         try:
             # Format sample data for display
             formatted_samples = []
@@ -823,9 +926,13 @@ class ExcelParser:
             # Retry loop for count mismatches
             for attempt in range(MAX_HEADER_COUNT_RETRIES + 1):
                 if attempt > 0:
-                    self.logger.info(f"Retry attempt {attempt}/{MAX_HEADER_COUNT_RETRIES} for header generation")
+                    self.logger.info(
+                        f"Retry attempt {attempt}/{MAX_HEADER_COUNT_RETRIES} for header generation"
+                    )
                 else:
-                    self.logger.info("Calling LLM for header generation (initial attempt)")
+                    self.logger.info(
+                        "Calling LLM for header generation (initial attempt)"
+                    )
 
                 # Use centralized utility with reflection for parse errors
                 parsed_response = await invoke_with_structured_output_and_reflection(
@@ -834,29 +941,37 @@ class ExcelParser:
 
                 if parsed_response is not None and parsed_response.headers:
                     generated_headers = parsed_response.headers
-                    self.logger.info(f"LLM generated {len(generated_headers)} headers (expected {column_count})")
+                    self.logger.info(
+                        f"LLM generated {len(generated_headers)} headers (expected {column_count})"
+                    )
 
                     # Validate header count matches column count
                     if len(generated_headers) == column_count:
-                        self.logger.info(f"Successfully generated headers matching expected column count ({column_count})")
+                        self.logger.info(
+                            f"Successfully generated headers matching expected column count ({column_count})"
+                        )
                         return generated_headers
                     else:
                         self.logger.warning(
                             f"Header count mismatch: generated {len(generated_headers)}, expected {column_count}. "
                             f"Headers: {generated_headers}"
                         )
-                        
+
                         # If we have retries left, add reflection message for count correction
                         if attempt < MAX_HEADER_COUNT_RETRIES:
-                            self.logger.info("Adding reflection message to correct header count")
-                            
+                            self.logger.info(
+                                "Adding reflection message to correct header count"
+                            )
+
                             # Convert messages to list if not already
                             messages_list = list(messages)
-                            
+
                             # Add the failed response to context
-                            failed_response = json.dumps({"headers": generated_headers}, indent=2)
+                            failed_response = json.dumps(
+                                {"headers": generated_headers}, indent=2
+                            )
                             messages_list.append(AIMessage(content=failed_response))
-                            
+
                             # Add reflection prompt
                             reflection_prompt = f"""Your previous response contained {len(generated_headers)} headers, but I need EXACTLY {column_count} headers.
 
@@ -874,93 +989,108 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
 {{
     "headers": ["Header1", "Header2", ..., "Header{column_count}"]
 }}"""
-                            
-                            messages_list.append(HumanMessage(content=reflection_prompt))
+
+                            messages_list.append(
+                                HumanMessage(content=reflection_prompt)
+                            )
                             messages = messages_list
                             continue  # Try again
                         else:
                             # Out of retries, try smart fallback
-                            self.logger.warning(f"Exhausted {MAX_HEADER_COUNT_RETRIES} retries, attempting smart adjustment")
+                            self.logger.warning(
+                                f"Exhausted {MAX_HEADER_COUNT_RETRIES} retries, attempting smart adjustment"
+                            )
                             adjusted_headers = self._adjust_headers_to_count(
                                 generated_headers, column_count, formatted_samples
                             )
                             if adjusted_headers:
-                                self.logger.info(f"Successfully adjusted headers to match count ({column_count})")
+                                self.logger.info(
+                                    f"Successfully adjusted headers to match count ({column_count})"
+                                )
                                 return adjusted_headers
                 else:
                     self.logger.warning("LLM returned no response or empty headers")
                     break  # Exit retry loop
 
             # Final fallback: generate generic headers
-            self.logger.warning(f"Using generic fallback headers for {column_count} columns")
+            self.logger.warning(
+                f"Using generic fallback headers for {column_count} columns"
+            )
             return [f"Column_{i}" for i in range(1, column_count + 1)]
 
         except Exception as e:
             self.logger.error(f"Error in Excel header generation: {e}", exc_info=True)
-            self.logger.warning(f"Using generic fallback headers for {column_count} columns")
+            self.logger.warning(
+                f"Using generic fallback headers for {column_count} columns"
+            )
             return [f"Column_{i}" for i in range(1, column_count + 1)]
 
-
     def _adjust_headers_to_count(
-        self, generated_headers: List[str], expected_count: int, sample_data: List[List[str]]
+        self,
+        generated_headers: List[str],
+        expected_count: int,
+        sample_data: List[List[str]],
     ) -> Optional[List[str]]:
         """
         Intelligently adjust header count to match expected count.
-        
+
         This is a smart fallback that tries to salvage LLM-generated headers when the count is close
         but not exact. Only works if the count difference is reasonable (within 20%).
-        
+
         Args:
             generated_headers: Headers generated by LLM (wrong count)
             expected_count: Expected number of headers
             sample_data: Sample data rows to infer missing headers from
-            
+
         Returns:
             Adjusted headers list matching expected_count, or None if adjustment not feasible
         """
         current_count = len(generated_headers)
         count_diff = abs(current_count - expected_count)
-        
+
         # Only adjust if difference is reasonable (within 20% of expected)
         if count_diff > max(1, expected_count * 0.2):
             self.logger.info(
-                f"Header count difference too large ({count_diff} headers, {count_diff/expected_count*100:.1f}% off), "
+                f"Header count difference too large ({count_diff} headers, {count_diff / expected_count * 100:.1f}% off), "
                 "cannot adjust intelligently"
             )
             return None
-            
+
         self.logger.info(
             f"Attempting to adjust {current_count} headers to {expected_count} "
-            f"(difference: {count_diff}, {count_diff/expected_count*100:.1f}%)"
+            f"(difference: {count_diff}, {count_diff / expected_count * 100:.1f}%)"
         )
-        
+
         if current_count < expected_count:
             # Need to add headers (padding)
             adjusted = generated_headers.copy()
             num_to_add = expected_count - current_count
-            
+
             self.logger.info(f"Padding {num_to_add} missing headers")
-            
+
             # Try to infer names from sample data for missing columns
             for col_idx in range(current_count, expected_count):
                 # Analyze the column data in samples to infer a good name
                 if sample_data and col_idx < len(sample_data[0]):
-                    column_values = [row[col_idx] if col_idx < len(row) else "" for row in sample_data]
+                    column_values = [
+                        row[col_idx] if col_idx < len(row) else ""
+                        for row in sample_data
+                    ]
                     # Filter out empty values
                     non_empty = [v for v in column_values if v and str(v).strip()]
-                    
+
                     if non_empty:
                         # Try to infer type from data
                         sample_val = str(non_empty[0])
-                        
+
                         # Check for common patterns
-                        if re.match(r'^\d{4}-\d{2}-\d{2}', sample_val):
+                        if re.match(r"^\d{4}-\d{2}-\d{2}", sample_val):
                             header = f"Date_{col_idx + 1}"
-                        elif re.match(r'^[\$€£¥]?[\d,]+\.?\d*$', sample_val):
+                        elif re.match(r"^[\$€£¥]?[\d,]+\.?\d*$", sample_val):
                             header = f"Amount_{col_idx + 1}"
-                        elif re.match(r'^\d+\.?\d*%?$', sample_val):
+                        elif re.match(r"^\d+\.?\d*%?$", sample_val):
                             header = f"Value_{col_idx + 1}"
-                        elif re.match(r'^[A-Z]{2,}$', sample_val):
+                        elif re.match(r"^[A-Z]{2,}$", sample_val):
                             header = f"Code_{col_idx + 1}"
                         else:
                             header = f"Field_{col_idx + 1}"
@@ -968,23 +1098,29 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                         header = f"Column_{col_idx + 1}"
                 else:
                     header = f"Column_{col_idx + 1}"
-                
+
                 adjusted.append(header)
-                self.logger.info(f"Added inferred header for column {col_idx + 1}: {header}")
-            
-            return adjusted
-            
-        else:
-            # Need to remove headers (truncating)
-            self.logger.info(f"Truncating {current_count - expected_count} excess headers")
-            adjusted = generated_headers[:expected_count]
-            
-            truncated = generated_headers[expected_count:]
-            self.logger.info(f"Removed excess headers: {truncated}")
-            
+                self.logger.info(
+                    f"Added inferred header for column {col_idx + 1}: {header}"
+                )
+
             return adjusted
 
-    def _concatenate_multirow_headers(self, multirow_headers: List[List[Any]], column_count: int) -> List[str]:
+        else:
+            # Need to remove headers (truncating)
+            self.logger.info(
+                f"Truncating {current_count - expected_count} excess headers"
+            )
+            adjusted = generated_headers[:expected_count]
+
+            truncated = generated_headers[expected_count:]
+            self.logger.info(f"Removed excess headers: {truncated}")
+
+            return adjusted
+
+    def _concatenate_multirow_headers(
+        self, multirow_headers: List[List[Any]], column_count: int
+    ) -> List[str]:
         """
         Fallback method to concatenate multi-row headers with underscores.
 
@@ -995,14 +1131,18 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
         Returns:
             List of concatenated header strings
         """
-        self.logger.info(f"Using simple concatenation for {len(multirow_headers)} header rows")
+        self.logger.info(
+            f"Using simple concatenation for {len(multirow_headers)} header rows"
+        )
         consolidated = []
-        
+
         for col_idx in range(column_count):
             # Collect non-empty values from all header rows for this column
             parts = []
-            seen = set()  # Track seen values to avoid duplicates (e.g., from merged cells)
-            
+            seen = (
+                set()
+            )  # Track seen values to avoid duplicates (e.g., from merged cells)
+
             for header_row in multirow_headers:
                 if col_idx < len(header_row):
                     value = header_row[col_idx]
@@ -1012,15 +1152,15 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                         if value_str not in seen:
                             parts.append(value_str)
                             seen.add(value_str)
-            
+
             # Join with underscores or use generic name if no parts
             if parts:
                 header = "_".join(parts)
             else:
                 header = f"Column_{col_idx + 1}"
-            
+
             consolidated.append(header)
-        
+
         return consolidated
 
     @retry(
@@ -1030,13 +1170,15 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
             f"Retrying LLM call after error. Attempt {retry_state.attempt_number}"
         ),
     )
-    async def _call_llm(self,messages) -> Union[str, dict, list]:
+    async def _call_llm(self, messages) -> Union[str, dict, list]:
         """Wrapper for LLM calls with retry logic"""
         return await self.llm.ainvoke(messages)
 
-    async def get_tables_in_sheet(self, sheet_name: str, llm: BaseChatModel) -> List[Dict[str, Any]]:
+    async def get_tables_in_sheet(
+        self, sheet_name: str, llm: BaseChatModel
+    ) -> List[Dict[str, Any]]:
         """Get all tables in a specific sheet with LLM-based header detection/generation
-        
+
         Note: Header detection and generation is now handled in find_tables() method,
         so this method simply returns the tables with properly detected/generated headers.
         """
@@ -1057,12 +1199,16 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
             return tables
 
         except Exception as e:
-            self.logger.error(f"Error getting tables in sheet {sheet_name}: {e}", exc_info=True)
+            self.logger.error(
+                f"Error getting tables in sheet {sheet_name}: {e}", exc_info=True
+            )
             raise
 
     async def get_table_summary(self, table: Dict[str, Any]) -> str:
         """Get a natural language summary of a specific table"""
-        self.logger.info(f"Getting summary for table with {len(table['headers'])} columns and {len(table['data'])} rows")
+        self.logger.info(
+            f"Getting summary for table with {len(table['headers'])} columns and {len(table['data'])} rows"
+        )
         try:
             # Prepare sample data
             sample_data = [
@@ -1082,9 +1228,9 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                 headers=table["headers"], sample_data=json.dumps(sample_data, indent=2)
             )
             response = await self._call_llm(messages)
-            if '</think>' in response.content:
-                response.content = response.content.split('</think>')[-1]
-            self.logger.info(f"Table summary generated")
+            if "</think>" in response.content:
+                response.content = response.content.split("</think>")[-1]
+            self.logger.info("Table summary generated")
             return response.content
 
         except Exception as e:
@@ -1125,11 +1271,15 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
 
             if parsed_response is not None and parsed_response.descriptions:
                 descriptions = parsed_response.descriptions
-                self.logger.info(f"Successfully generated natural language descriptions for {len(descriptions)} rows")
+                self.logger.info(
+                    f"Successfully generated natural language descriptions for {len(descriptions)} rows"
+                )
 
             return descriptions
         except Exception as e:
-            self.logger.error(f"Error converting rows to natural language text: {e}", exc_info=True)
+            self.logger.error(
+                f"Error converting rows to natural language text: {e}", exc_info=True
+            )
             raise
 
     async def process_sheet_with_summaries(
@@ -1150,7 +1300,9 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
 
         # Get threshold from environment variable (default: 1000)
         threshold = int(os.getenv("MAX_TABLE_ROWS_FOR_LLM", "1000"))
-        self.logger.info(f"Using LLM threshold for row processing: {threshold} (cumulative count: {cumulative_row_count[0]})")
+        self.logger.info(
+            f"Using LLM threshold for row processing: {threshold} (cumulative count: {cumulative_row_count[0]})"
+        )
 
         # Get tables in the sheet
         tables = await self.get_tables_in_sheet(sheet_name, llm)
@@ -1158,14 +1310,18 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
         # Process each table
         processed_tables = []
         for table_idx, table in enumerate(tables, 1):
-            self.logger.info(f"Processing table {table_idx}/{len(tables)} in sheet {sheet_name}")
+            self.logger.info(
+                f"Processing table {table_idx}/{len(tables)} in sheet {sheet_name}"
+            )
             # Get table summary (always use LLM)
             table_summary = await self.get_table_summary(table)
 
             # Add current table rows to cumulative count
             table_row_count = len(table["data"])
             cumulative_row_count[0] += table_row_count
-            self.logger.info(f"Table has {table_row_count} rows, cumulative count: {cumulative_row_count[0]}")
+            self.logger.info(
+                f"Table has {table_row_count} rows, cumulative count: {cumulative_row_count[0]}"
+            )
 
             # Check if cumulative count exceeds threshold
             use_llm_for_rows = cumulative_row_count[0] <= threshold
@@ -1173,7 +1329,9 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
             processed_rows = []
 
             if use_llm_for_rows:
-                self.logger.info(f"Using LLM for row processing (under threshold of {threshold})")
+                self.logger.info(
+                    f"Using LLM for row processing (under threshold of {threshold})"
+                )
                 # Process rows in batches of 50 in parallel using LLM
                 batch_size = 50
 
@@ -1183,8 +1341,10 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                     batch = table["data"][i : i + batch_size]
                     batches.append((i, batch))  # Store start index and batch data
 
-                self.logger.info(f"Processing {len(table['data'])} rows in {len(batches)} batches of {batch_size}")
-                
+                self.logger.info(
+                    f"Processing {len(table['data'])} rows in {len(batches)} batches of {batch_size}"
+                )
+
                 # Limit parallel processing to at most 10 concurrent batches
                 semaphore = asyncio.Semaphore(10)
 
@@ -1199,8 +1359,12 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                     batch_tasks.append((start_idx, batch, task))
 
                 # Wait for all batches to complete (max 10 running concurrently)
-                task_results = await asyncio.gather(*[task for _, _, task in batch_tasks])
-                self.logger.info(f"Completed processing {len(batch_tasks)} batches with LLM")
+                task_results = await asyncio.gather(
+                    *[task for _, _, task in batch_tasks]
+                )
+                self.logger.info(
+                    f"Completed processing {len(batch_tasks)} batches with LLM"
+                )
 
                 # Combine results with their metadata and process
                 for i, (start_idx, batch, _) in enumerate(batch_tasks):
@@ -1211,13 +1375,17 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                         if row:
                             processed_rows.append(
                                 {
-                                    "raw_data": {cell["header"]: cell["value"] for cell in row},
+                                    "raw_data": {
+                                        cell["header"]: cell["value"] for cell in row
+                                    },
                                     "natural_language_text": row_text,
                                     "row_num": row[0]["row"],  # Include row number
                                 }
                             )
             else:
-                self.logger.info(f"Using simple format for row processing (exceeded threshold of {threshold})")
+                self.logger.info(
+                    f"Using simple format for row processing (exceeded threshold of {threshold})"
+                )
                 # Use simple format for rows (skip LLM)
                 for row in table["data"]:
                     if row:
@@ -1227,7 +1395,7 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                             {
                                 "raw_data": row_data,
                                 "natural_language_text": row_text,
-                                "row_num": row[0]["row"]  # Include row number
+                                "row_num": row[0]["row"],  # Include row number
                             }
                         )
 
@@ -1244,9 +1412,13 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                     },
                 }
             )
-            self.logger.info(f"Completed processing table {table_idx} with {len(processed_rows)} rows")
+            self.logger.info(
+                f"Completed processing table {table_idx} with {len(processed_rows)} rows"
+            )
 
-        self.logger.info(f"Completed processing sheet {sheet_name} with {len(processed_tables)} tables")
+        self.logger.info(
+            f"Completed processing sheet {sheet_name} with {len(processed_tables)} tables"
+        )
         return {"sheet_name": sheet_name, "tables": processed_tables}
 
     async def get_blocks_from_workbook(self, llm) -> BlocksContainer:
@@ -1262,10 +1434,16 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
         cumulative_row_count = [0]
 
         # Iterate sheets and build hierarchy
-        self.logger.info(f"Processing {len(self.workbook.sheetnames)} sheets: {self.workbook.sheetnames}")
+        self.logger.info(
+            f"Processing {len(self.workbook.sheetnames)} sheets: {self.workbook.sheetnames}"
+        )
         for sheet_idx, sheet_name in enumerate(self.workbook.sheetnames, 1):
-            self.logger.info(f"Processing sheet {sheet_idx}/{len(self.workbook.sheetnames)}: {sheet_name}")
-            sheet_result = await self.process_sheet_with_summaries(llm, sheet_name, cumulative_row_count)
+            self.logger.info(
+                f"Processing sheet {sheet_idx}/{len(self.workbook.sheetnames)}: {sheet_name}"
+            )
+            sheet_result = await self.process_sheet_with_summaries(
+                llm, sheet_name, cumulative_row_count
+            )
             if sheet_result is None:
                 continue
 
@@ -1304,7 +1482,9 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                     source_group_id=None,
                     table_metadata=TableMetadata(
                         num_of_rows=len(rows),
-                        num_of_cols=len(headers) if headers else (len(rows[0]["raw_data"]) if rows else 0),
+                        num_of_cols=len(headers)
+                        if headers
+                        else (len(rows[0]["raw_data"]) if rows else 0),
                     ),
                     data={
                         "table_summary": table.get("summary", ""),
@@ -1315,7 +1495,9 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                     format=DataFormat.JSON,
                 )
                 block_groups.append(table_group)
-                sheet_group_children.append(BlockContainerIndex(block_group_index=table_group_index))
+                sheet_group_children.append(
+                    BlockContainerIndex(block_group_index=table_group_index)
+                )
 
                 # Create TABLE_ROW blocks under this table
                 for i, row in enumerate(rows):
@@ -1327,7 +1509,9 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                             type=BlockType.TABLE_ROW,
                             format=DataFormat.JSON,
                             data={
-                                "row_natural_language_text": row.get("natural_language_text", ""),
+                                "row_natural_language_text": row.get(
+                                    "natural_language_text", ""
+                                ),
                                 "row_number": int(row.get("row_num") or (i + 1)),
                                 "row": json.dumps(row_data, default=self._json_default),
                                 "sheet_number": sheet_idx,
@@ -1336,16 +1520,20 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                             parent_index=table_group_index,
                         )
                     )
-                    table_group_children.append(BlockContainerIndex(block_index=block_index))
+                    table_group_children.append(
+                        BlockContainerIndex(block_index=block_index)
+                    )
 
                 # attach table children
                 block_groups[table_group_index].children = table_group_children
 
             # attach sheet children (its tables)
             block_groups[sheet_group_index].children = sheet_group_children
-            self.logger.info(f"Completed processing sheet {sheet_name}: {len(sheet_result['tables'])} tables")
+            self.logger.info(
+                f"Completed processing sheet {sheet_name}: {len(sheet_result['tables'])} tables"
+            )
 
-        self.logger.info(f"Workbook processing complete. Total: {len(blocks)} blocks, {len(block_groups)} block groups")
+        self.logger.info(
+            f"Workbook processing complete. Total: {len(blocks)} blocks, {len(block_groups)} block groups"
+        )
         return BlocksContainer(blocks=blocks, block_groups=block_groups)
-
-
