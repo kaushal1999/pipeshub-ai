@@ -29,16 +29,18 @@ from app.models.blocks import (
 )
 from app.modules.parsers.excel.prompt_template import (
     ExcelHeaderDetection,
-    RowDescriptions,
     TableHeaders,
     excel_header_detection_prompt,
     excel_header_generation_prompt,
-    row_text_prompt,
+    row_text_prompt_for_csv,
     sheet_summary_prompt,
     table_summary_prompt,
 )
-from app.utils.indexing_helpers import generate_simple_row_text
-from app.utils.streaming import invoke_with_structured_output_and_reflection
+from app.utils.indexing_helpers import format_rows_with_index, generate_simple_row_text
+from app.utils.streaming import (
+    invoke_with_row_descriptions_and_reflection,
+    invoke_with_structured_output_and_reflection,
+)
 
 # Module-level constants for Excel processing (mirror CSV parser)
 NUM_SAMPLE_ROWS = (
@@ -261,7 +263,7 @@ class ExcelParser:
         # Store prompts
         self.sheet_summary_prompt = sheet_summary_prompt
         self.table_summary_prompt = table_summary_prompt
-        self.row_text_prompt = row_text_prompt
+        self.row_text_prompt = row_text_prompt_for_csv
 
         # Configure retry parameters
         self.max_retries = 3
@@ -459,9 +461,14 @@ class ExcelParser:
                         cell = sheet.cell(row=row, column=col)
                         if cell.value is not None:
                             has_data = True
-                            max_row = row
                             break
-                    if not has_data:
+
+                    if has_data:
+                        max_row = row
+                    elif row == start_row + 1:
+                        # Allow skipping the first empty row (visual gap), but don't update max_row yet
+                        continue
+                    else:
                         break
 
                 # Step 1.5: Expand left to include additional columns
@@ -1256,17 +1263,22 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                 for row in rows
             ]
 
+            # Format using index helper
+            numbered_rows_data = format_rows_with_index(rows_data)
+
             # Get natural language text from LLM with retry
             messages = self.row_text_prompt.format_messages(
-                table_summary=table_summary, rows_data=json.dumps(rows_data, indent=2)
+                table_summary=table_summary,
+                numbered_rows_data=numbered_rows_data,
+                row_count=len(rows_data),
             )
 
             # Default to string representations of rows
             descriptions = [str(row) for row in rows_data]
 
-            # Use centralized utility with reflection
-            parsed_response = await invoke_with_structured_output_and_reflection(
-                self.llm, messages, RowDescriptions
+            # Use specialized utility for row descriptions
+            parsed_response = await invoke_with_row_descriptions_and_reflection(
+                self.llm, messages, len(rows_data)
             )
 
             if parsed_response is not None and parsed_response.descriptions:
