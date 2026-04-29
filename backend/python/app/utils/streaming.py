@@ -2180,10 +2180,18 @@ async def invoke_with_structured_output_and_reflection(
                 parsed_response = schema.model_validate_json(response_text)
                 logger.debug("AIMessage/string response validated successfully")
             else:
-                # Response is already a Pydantic model
-                logger.debug("Response is a Pydantic model, extracting and validating")
-                response_content = response.model_dump_json()
-                parsed_response = schema.model_validate(response.model_dump())
+                if isinstance(response, schema):
+                    logger.debug("Response is already the target schema instance, returning directly")
+                    response_content = response.model_dump_json()
+                    parsed_response = response
+                elif hasattr(response, 'parsed') and isinstance(response.parsed, schema):
+                    logger.debug("Response is an OpenAI wrapper with .parsed field, extracting directly")
+                    parsed_response = response.parsed
+                    response_content = parsed_response.model_dump_json()
+                else:
+                    logger.debug("Response is a Pydantic model, extracting and validating")
+                    response_content = response.model_dump_json()
+                    parsed_response = schema.model_validate(response.model_dump())
                 logger.debug("Pydantic model response validated successfully")
 
         return parsed_response
@@ -2230,9 +2238,18 @@ Respond only with valid JSON that matches the schema."""
                         logger.debug(f"Cleaned reflection content length: {len(reflection_text)} chars")
                         parsed_response = schema.model_validate_json(reflection_text)
                     else:
-                        logger.debug("Reflection response is a Pydantic model, extracting and validating")
-                        reflection_content = reflection_response.model_dump_json()
-                        parsed_response = schema.model_validate(reflection_response.model_dump())
+                        if isinstance(reflection_response, schema):
+                            logger.debug("Reflection response is already the target schema instance")
+                            reflection_content = reflection_response.model_dump_json()
+                            parsed_response = reflection_response
+                        elif hasattr(reflection_response, 'parsed') and isinstance(reflection_response.parsed, schema):
+                            logger.debug("Reflection response is an OpenAI wrapper with .parsed field")
+                            parsed_response = reflection_response.parsed
+                            reflection_content = parsed_response.model_dump_json()
+                        else:
+                            logger.debug("Reflection response is a Pydantic model, extracting and validating")
+                            reflection_content = reflection_response.model_dump_json()
+                            parsed_response = schema.model_validate(reflection_response.model_dump())
 
                 logger.info(f"Reflection successful on attempt {attempt + 1}")
                 return parsed_response
