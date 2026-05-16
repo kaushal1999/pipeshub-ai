@@ -3,11 +3,14 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from enum import Enum
+from io import BytesIO
+from operator import itemgetter
 from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
-import fitz
 import numpy as np
+from pdfplumber.page import Page as PdfplumberPage
+from pdfplumber.utils import cluster_objects
 
 DEFAULT_RENDER_DPI = 150
 DPI_SCALE = 72.0
@@ -28,6 +31,40 @@ BLOCK_MATCH_OVERLAP_THRESHOLD = 0.3
 MIN_LIST_LINES = 2
 LIST_BULLET_PATTERNS = ("•", "●", "○", "■", "□", "▪", "▫", "–", "—", "-")
 ORDERED_LIST_PATTERN_CHARS = frozenset("0123456789.)")
+MIN_GRAPHIC_TEXT_COVERAGE = 0.02
+
+
+def _fontname_is_bold(fontname: str) -> bool:
+    fn = fontname.lower()
+    return "bold" in fn or "black" in fn
+
+
+def _build_text_dict_from_pdfplumber_page(page: PdfplumberPage) -> Dict[str, Any]:
+    """Build a PyMuPDF-compatible text dict from a pdfplumber page (blocks/lines/spans)."""
+    words = page.extract_words(extra_attrs=["fontname", "size"], keep_blank_chars=False)
+    if not words:
+        return {"blocks": []}
+    word_lines = cluster_objects(words, itemgetter("doctop"), 5)
+    blocks: List[Dict[str, Any]] = []
+    for word_line in word_lines:
+        ordered = sorted(word_line, key=itemgetter("x0"))
+        x0 = min(w["x0"] for w in ordered)
+        top = min(w["top"] for w in ordered)
+        x1 = max(w["x1"] for w in ordered)
+        bottom = max(w["bottom"] for w in ordered)
+        block_bbox = (x0, top, x1, bottom)
+        spans: List[Dict[str, Any]] = []
+        for w in ordered:
+            fn = str(w.get("fontname") or "")
+            flags = BOLD_FLAG if _fontname_is_bold(fn) else 0
+            sz = float(w.get("size") or 0)
+            if sz <= 0:
+                sz = float(w.get("bottom", bottom) - w.get("top", top))
+            spans.append({"text": w["text"], "size": sz, "flags": flags})
+        blocks.append(
+            {"type": 0, "bbox": block_bbox, "lines": [{"spans": spans}]}
+        )
+    return {"blocks": blocks}
 
 
 class LayoutRegionType(str, Enum):
@@ -74,6 +111,28 @@ def _pixel_to_pdf(val: float, dpi: int) -> float:
     return val * DPI_SCALE / dpi
 
 
+def _pil_from_pdf_stream(stream: Any) -> Optional[Any]:
+    """Extract a PIL Image from a pdfminer PDFStream.
+
+    Handles DCTDecode (JPEG) and JPXDecode (JPEG2000) natively via PIL.
+    Returns None for other encodings, triggering page-crop fallback.
+    """
+    from PIL import Image as _PILImage
+
+    try:
+        data = stream.get_data()
+    except Exception:
+        return None
+    if not data or len(data) < 8:
+        return None
+    try:
+        img = _PILImage.open(BytesIO(data))
+        img.load()
+        return img
+    except Exception:
+        return None
+
+
 def _count_distinct_lines(projection: np.ndarray) -> int:
     """Count distinct contiguous runs of True values in a 1-D boolean array."""
     if projection.size == 0:
@@ -88,19 +147,23 @@ def _reading_order_key(region: LayoutRegion) -> Tuple[float, float]:
 
 
 class OpenCVLayoutAnalyzer:
-    """Lightweight ML-free layout analysis using OpenCV morphological operations."""
+    """Lightweight ML-free layout analysis using OpenCV morphological operations.
+
+    Text metrics come from pdfplumber word extraction; page images use pdfplumber's
+    pypdfium2 rasterizer at *render_dpi*.
+    """
 
     def __init__(self, logger: logging.Logger, render_dpi: int = DEFAULT_RENDER_DPI) -> None:
         self.logger = logger
         self.render_dpi = render_dpi
 
-    def _render_page_to_image(self, page: fitz.Page) -> np.ndarray:
-        zoom = self.render_dpi / DPI_SCALE
-        mat = fitz.Matrix(zoom, zoom)
-        pix = page.get_pixmap(matrix=mat, alpha=False)
-        return np.frombuffer(pix.samples, dtype=np.uint8).reshape(
-            pix.height, pix.width, 3
-        )
+    def _render_page_to_image(self, page: PdfplumberPage) -> np.ndarray:
+        """Rasterize using pdfplumber (pypdfium2); matches prior ~150 DPI OpenCV input."""
+        page_image = page.to_image(resolution=self.render_dpi)
+        pil_im = page_image.original
+        if pil_im.mode != "RGB":
+            pil_im = pil_im.convert("RGB")
+        return np.asarray(pil_im)
 
     def _preprocess(self, img: np.ndarray) -> np.ndarray:
         gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
@@ -222,20 +285,15 @@ class OpenCVLayoutAnalyzer:
 
     def _extract_image_regions(
         self,
-        page: fitz.Page,
+        page: PdfplumberPage,
         table_rects: List[Tuple[float, float, float, float]],
         page_width_pt: float,
         page_height_pt: float,
     ) -> List[Dict[str, Any]]:
         page_area = page_width_pt * page_height_pt
         images: List[Dict[str, Any]] = []
-        for img_info in page.get_images(full=True):
-            xref = img_info[0]
-            rects = page.get_image_rects(xref)
-            if not rects:
-                continue
-            rect = rects[0]
-            pdf_bbox = (rect.x0, rect.y0, rect.x1, rect.y1)
+        for img_obj in page.images:
+            pdf_bbox = (img_obj["x0"], img_obj["top"], img_obj["x1"], img_obj["bottom"])
             if _rect_area(pdf_bbox) < page_area * MIN_IMAGE_AREA_RATIO:
                 continue
             in_table = any(
@@ -244,18 +302,35 @@ class OpenCVLayoutAnalyzer:
             )
             if in_table:
                 continue
+
+            pil_img = None
+
+            stream = img_obj.get("stream")
+            if stream is not None:
+                pil_img = _pil_from_pdf_stream(stream)
+
+            if pil_img is None:
+                try:
+                    cropped = page.crop(pdf_bbox, strict=False)
+                    pil_img = cropped.to_image(resolution=self.render_dpi).original
+                except Exception as e:
+                    self.logger.warning(f"Could not rasterize image region: {e}")
+                    continue
+
             try:
-                base_image = page.parent.extract_image(xref)
-                if base_image and base_image.get("image"):
-                    images.append(
-                        {
-                            "bbox": pdf_bbox,
-                            "data": base_image["image"],
-                            "ext": base_image.get("ext", "png"),
-                        }
-                    )
+                if pil_img.mode not in ("RGB", "L"):
+                    pil_img = pil_img.convert("RGB")
+                buf = BytesIO()
+                pil_img.save(buf, format="PNG")
+                images.append(
+                    {
+                        "bbox": pdf_bbox,
+                        "data": buf.getvalue(),
+                        "ext": "png",
+                    }
+                )
             except Exception as e:
-                self.logger.warning(f"Could not extract image xref={xref}: {e}")
+                self.logger.warning(f"Could not encode image: {e}")
         return images
 
     def _get_text_blocks_for_region(
@@ -341,10 +416,10 @@ class OpenCVLayoutAnalyzer:
         return None
 
     def analyze_page(
-        self, page: fitz.Page
+        self, page: PdfplumberPage
     ) -> List[LayoutRegion]:
-        page_w = page.rect.width
-        page_h = page.rect.height
+        page_w = float(page.width)
+        page_h = float(page.height)
 
         img = self._render_page_to_image(page)
         binary = self._preprocess(img)
@@ -353,8 +428,9 @@ class OpenCVLayoutAnalyzer:
         text_rects = self._detect_text_regions(binary, table_rects, page_w, page_h)
         image_infos = self._extract_image_regions(page, table_rects, page_w, page_h)
 
-        text_dict = page.get_text("dict")
+        text_dict = _build_text_dict_from_pdfplumber_page(page)
         median_font_size = self._compute_median_font_size(text_dict)
+        page_area = page_w * page_h
 
         regions: List[LayoutRegion] = []
 
@@ -363,19 +439,14 @@ class OpenCVLayoutAnalyzer:
         )
 
         for ib in image_infos:
-            in_text = any(
-                _overlap_ratio(ib["bbox"], tr) > OVERLAP_THRESHOLD
-                for tr in text_rects
-            )
-            if not in_text:
-                regions.append(
-                    LayoutRegion(
-                        type=LayoutRegionType.IMAGE,
-                        bbox=ib["bbox"],
-                        image_data=ib["data"],
-                        image_ext=ib["ext"],
-                    )
+            regions.append(
+                LayoutRegion(
+                    type=LayoutRegionType.IMAGE,
+                    bbox=ib["bbox"],
+                    image_data=ib["data"],
+                    image_ext=ib["ext"],
                 )
+            )
 
         image_bboxes = [ib["bbox"] for ib in image_infos]
         for tr in text_rects:
@@ -384,7 +455,46 @@ class OpenCVLayoutAnalyzer:
             )
             if in_image:
                 continue
+
             matched_blocks = self._get_text_blocks_for_region(tr, text_dict)
+            region_area = _rect_area(tr)
+
+            if not matched_blocks and region_area >= page_area * MIN_IMAGE_AREA_RATIO:
+                text_coverage_in_region = 0.0
+                if region_area > 0:
+                    for block in text_dict.get("blocks", []):
+                        if block.get("type") != 0:
+                            continue
+                        bb = block.get("bbox")
+                        if not bb:
+                            continue
+                        ix0 = max(bb[0], tr[0])
+                        iy0 = max(bb[1], tr[1])
+                        ix1 = min(bb[2], tr[2])
+                        iy1 = min(bb[3], tr[3])
+                        text_coverage_in_region += max(0, ix1 - ix0) * max(0, iy1 - iy0)
+
+                if text_coverage_in_region / max(region_area, 1) >= MIN_GRAPHIC_TEXT_COVERAGE:
+                    continue
+
+                try:
+                    cropped = page.crop(tr, strict=False)
+                    pil = cropped.to_image(resolution=self.render_dpi).original
+                    if pil.mode != "RGB":
+                        pil = pil.convert("RGB")
+                    buf = BytesIO()
+                    pil.save(buf, format="PNG")
+                    regions.append(LayoutRegion(
+                        type=LayoutRegionType.IMAGE,
+                        bbox=tr,
+                        image_data=buf.getvalue(),
+                        image_ext="png",
+                    ))
+                    image_bboxes.append(tr)
+                except Exception as e:
+                    self.logger.debug(f"Could not rasterize graphic region: {e}")
+                continue
+
             if not matched_blocks:
                 continue
             text, avg_size, is_bold = self._extract_text_and_metadata(matched_blocks)
@@ -443,7 +553,7 @@ class OpenCVLayoutAnalyzer:
         page_w: float,
         page_h: float,
     ) -> None:
-        """Pick up any PyMuPDF text blocks not covered by existing regions."""
+        """Pick up any parsed text blocks not covered by existing regions."""
         existing_bboxes = [r.bbox for r in regions]
         median_size = self._compute_median_font_size(text_dict)
 

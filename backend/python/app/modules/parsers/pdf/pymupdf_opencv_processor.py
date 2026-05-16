@@ -8,7 +8,9 @@ from dataclasses import dataclass
 from io import BytesIO
 from typing import List, Optional, Tuple
 
-import fitz
+import pdfplumber
+from pdfplumber.page import Page as PdfplumberPage
+from pdfplumber.pdf import PDF
 
 from app.config.configuration_service import ConfigurationService
 from app.models.blocks import (
@@ -61,10 +63,10 @@ class ParsedPageData:
 
 
 class PyMuPDFOpenCVProcessor:
-    """PDF parser combining PyMuPDF text extraction with OpenCV layout analysis.
+    """PDF parser combining pdfplumber text extraction with OpenCV layout analysis.
 
-    Uses OpenCV morphological operations for table detection, text region grouping,
-    and heading/list heuristics. No ML models required.
+    Page rasterization uses pdfplumber / pypdfium2 (no PyMuPDF). OpenCV handles table
+    detection, text region grouping, and heading/list heuristics.
     """
 
     def __init__(
@@ -82,18 +84,16 @@ class PyMuPDFOpenCVProcessor:
         self, doc_name: str, content: bytes | BytesIO
     ) -> List[ParsedPageData]:
         stream = content if isinstance(content, BytesIO) else BytesIO(content)
-        doc = fitz.open(stream=stream.read(), filetype="pdf")
-
-        try:
+        pdf_bytes = stream.read()
+        with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
             pages_data: List[ParsedPageData] = []
-            for page_idx in range(len(doc)):
-                page = doc[page_idx]
+            for page_idx, page in enumerate(pdf.pages):
                 regions = await asyncio.to_thread(self._analyzer.analyze_page, page)
                 pages_data.append(
                     ParsedPageData(
                         page_number=page_idx + 1,
-                        width=page.rect.width,
-                        height=page.rect.height,
+                        width=float(page.width),
+                        height=float(page.height),
                         regions=regions,
                     )
                 )
@@ -101,25 +101,24 @@ class PyMuPDFOpenCVProcessor:
                     f"Page {page_idx + 1}: detected {len(regions)} layout regions"
                 )
 
-            await asyncio.to_thread(self._extract_tables_with_pymupdf, doc, pages_data)
+            await asyncio.to_thread(self._extract_tables_with_pdfplumber, pdf, pages_data)
             return pages_data
-        finally:
-            doc.close()
 
-    def _extract_tables_with_pymupdf(
-        self, doc: fitz.Document, pages_data: List[ParsedPageData]
+    def _extract_tables_with_pdfplumber(
+        self, pdf: PDF, pages_data: List[ParsedPageData]
     ) -> None:
-        """Use PyMuPDF's built-in table finder to populate table grids."""
+        """Use pdfplumber table detection to populate table grids."""
         for pd in pages_data:
-            page = doc[pd.page_number - 1]
+            page = pdf.pages[pd.page_number - 1]
             try:
-                table_finder = page.find_tables()
+                tables = page.find_tables()
             except Exception as e:
                 self.logger.debug(f"find_tables failed on page {pd.page_number}: {e}")
                 continue
 
-            for table in table_finder.tables:
-                t_bbox = (table.bbox[0], table.bbox[1], table.bbox[2], table.bbox[3])
+            for table in tables:
+                bb = table.bbox
+                t_bbox = (bb[0], bb[1], bb[2], bb[3])
                 best_region: Optional[LayoutRegion] = None
                 best_overlap = 0.0
                 for region in pd.regions:
@@ -130,7 +129,11 @@ class PyMuPDFOpenCVProcessor:
                         best_overlap = ov
                         best_region = region
 
-                grid = table.extract()
+                raw_grid = table.extract()
+                grid = [
+                    [("" if cell is None else str(cell)) for cell in row]
+                    for row in raw_grid
+                ]
                 if best_region and best_overlap > BLOCK_MATCH_OVERLAP_THRESHOLD:
                     best_region.table_grid = grid
                     best_region.bbox = t_bbox
@@ -243,15 +246,16 @@ class PyMuPDFOpenCVProcessor:
         if not grid or len(grid) == 0:
             return None
 
-        response = await get_table_summary_n_headers(self.config, grid)
-        table_summary = response.summary if response else ""
-        column_headers = response.headers if response else []
+        # response = await get_table_summary_n_headers(self.config, grid)
+        table_summary = ""
+        column_headers = []
 
         table_rows_text, table_rows = await get_rows_text(
             self.config,
             {"grid": grid},
             table_summary,
             column_headers,
+            skip_llm_descriptions=True,
         )
 
         num_rows = len(grid)

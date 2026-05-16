@@ -58,12 +58,18 @@ logger = create_logger("streaming")
 opik_tracer = None
 api_key = os.getenv("OPIK_API_KEY")
 workspace = os.getenv("OPIK_WORKSPACE")
+opik_project_name = os.getenv("OPIK_PROJECT_NAME", "pipeshub")
 if api_key and workspace:
     try:
         from opik import configure
         from opik.integrations.langchain import OpikTracer
-        configure(use_local=False, api_key=api_key, workspace=workspace)
-        opik_tracer = OpikTracer()
+        configure(
+            use_local=False,
+            api_key=api_key,
+            workspace=workspace,
+            project_name=opik_project_name,
+        )
+        opik_tracer = OpikTracer(project_name=opik_project_name)
     except Exception as e:
         logger.warning(f"Error configuring Opik: {e}")
 else:

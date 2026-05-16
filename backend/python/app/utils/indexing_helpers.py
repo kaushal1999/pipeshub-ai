@@ -120,7 +120,12 @@ async def get_table_summary_n_headers(config, table_data) -> Optional[TableSumma
 
 
 async def get_rows_text(
-    config, table_data: dict, table_summary: str, column_headers: list[str]
+    config,
+    table_data: dict,
+    table_summary: str,
+    column_headers: list[str],
+    *,
+    skip_llm_descriptions: bool = False,
 ) -> Tuple[List[str], List[List[dict]]]:
     """Convert multiple rows into natural language text using context from summaries in a single prompt"""
     table = table_data.get("grid")
@@ -141,6 +146,10 @@ async def get_rows_text(
                 }
                 for row in table_rows
             ]
+
+            if skip_llm_descriptions:
+                descriptions = [generate_simple_row_text(row) for row in rows_data]
+                return descriptions, table_rows
 
             # Get natural language text from LLM with retry
             messages = row_text_prompt.format_messages(

@@ -45,21 +45,17 @@ class TestOpenCVLayoutAnalyzerAnalyzePage:
     @patch("app.modules.parsers.pdf.opencv_layout_analyzer.cv2")
     def test_analyze_page_text_region_classified_as_text(self, mock_cv2):
         """analyze_page classifies text region as TEXT when not heading or list."""
+        from PIL import Image
+
         analyzer = self._make_analyzer()
 
-        # Mock page
         mock_page = MagicMock()
-        mock_page.rect.width = 612.0
-        mock_page.rect.height = 792.0
+        mock_page.width = 612.0
+        mock_page.height = 792.0
+        mock_pi = MagicMock()
+        mock_pi.original = Image.new("RGB", (80, 100))
+        mock_page.to_image.return_value = mock_pi
 
-        # Render returns an image
-        mock_pix = MagicMock()
-        mock_pix.height = 100
-        mock_pix.width = 80
-        mock_pix.samples = np.zeros(100 * 80 * 3, dtype=np.uint8).tobytes()
-        mock_page.get_pixmap.return_value = mock_pix
-
-        # OpenCV mocks
         mock_cv2.cvtColor.return_value = np.zeros((100, 80), dtype=np.uint8)
         mock_cv2.adaptiveThreshold.return_value = np.zeros((100, 80), dtype=np.uint8)
         mock_cv2.morphologyEx.return_value = np.zeros((100, 80), dtype=np.uint8)
@@ -67,14 +63,10 @@ class TestOpenCVLayoutAnalyzerAnalyzePage:
         mock_cv2.add.return_value = np.zeros((100, 80), dtype=np.uint8)
         mock_cv2.dilate.return_value = np.zeros((100, 80), dtype=np.uint8)
 
-        # No table contours, no text contours from CV2
         mock_cv2.findContours.return_value = ([], None)
+        mock_page.images = []
 
-        # get_images returns empty
-        mock_page.get_images.return_value = []
-
-        # PyMuPDF text dict: one text block
-        mock_page.get_text.return_value = {
+        text_dict = {
             "blocks": [{
                 "type": 0,
                 "bbox": (50, 50, 200, 100),
@@ -84,8 +76,11 @@ class TestOpenCVLayoutAnalyzerAnalyzePage:
             }]
         }
 
-        regions = analyzer.analyze_page(mock_page)
-        # The block should be picked up by _collect_unclaimed_text_blocks as TEXT
+        with patch(
+            "app.modules.parsers.pdf.opencv_layout_analyzer._build_text_dict_from_pdfplumber_page",
+            return_value=text_dict,
+        ):
+            regions = analyzer.analyze_page(mock_page)
         text_regions = [r for r in regions if r.type.value == "text"]
         assert len(text_regions) >= 1
         assert "Normal paragraph text here." in text_regions[0].text
@@ -93,16 +88,16 @@ class TestOpenCVLayoutAnalyzerAnalyzePage:
     @patch("app.modules.parsers.pdf.opencv_layout_analyzer.cv2")
     def test_analyze_page_unclaimed_block_as_heading(self, mock_cv2):
         """analyze_page classifies unclaimed block as HEADING when font size is large."""
+        from PIL import Image
+
         analyzer = self._make_analyzer()
 
         mock_page = MagicMock()
-        mock_page.rect.width = 612.0
-        mock_page.rect.height = 792.0
-        mock_pix = MagicMock()
-        mock_pix.height = 100
-        mock_pix.width = 80
-        mock_pix.samples = np.zeros(100 * 80 * 3, dtype=np.uint8).tobytes()
-        mock_page.get_pixmap.return_value = mock_pix
+        mock_page.width = 612.0
+        mock_page.height = 792.0
+        mock_pi = MagicMock()
+        mock_pi.original = Image.new("RGB", (80, 100))
+        mock_page.to_image.return_value = mock_pi
 
         mock_cv2.cvtColor.return_value = np.zeros((100, 80), dtype=np.uint8)
         mock_cv2.adaptiveThreshold.return_value = np.zeros((100, 80), dtype=np.uint8)
@@ -111,12 +106,9 @@ class TestOpenCVLayoutAnalyzerAnalyzePage:
         mock_cv2.add.return_value = np.zeros((100, 80), dtype=np.uint8)
         mock_cv2.dilate.return_value = np.zeros((100, 80), dtype=np.uint8)
         mock_cv2.findContours.return_value = ([], None)
-        mock_page.get_images.return_value = []
+        mock_page.images = []
 
-        # Text dict with one block that has a large font size (heading)
-        # median font size will be 24 (only one block), so threshold = 24*1.3 = 31.2
-        # Set font size to 32 to trigger heading
-        mock_page.get_text.return_value = {
+        text_dict = {
             "blocks": [
                 {
                     "type": 0,
@@ -135,23 +127,27 @@ class TestOpenCVLayoutAnalyzerAnalyzePage:
             ]
         }
 
-        regions = analyzer.analyze_page(mock_page)
+        with patch(
+            "app.modules.parsers.pdf.opencv_layout_analyzer._build_text_dict_from_pdfplumber_page",
+            return_value=text_dict,
+        ):
+            regions = analyzer.analyze_page(mock_page)
         heading_regions = [r for r in regions if r.type.value == "heading"]
         assert len(heading_regions) >= 1
 
     @patch("app.modules.parsers.pdf.opencv_layout_analyzer.cv2")
     def test_analyze_page_unclaimed_block_bold_heading(self, mock_cv2):
         """Unclaimed bold block with size >= median*1.1 and single line -> heading."""
+        from PIL import Image
+
         analyzer = self._make_analyzer()
 
         mock_page = MagicMock()
-        mock_page.rect.width = 612.0
-        mock_page.rect.height = 792.0
-        mock_pix = MagicMock()
-        mock_pix.height = 100
-        mock_pix.width = 80
-        mock_pix.samples = np.zeros(100 * 80 * 3, dtype=np.uint8).tobytes()
-        mock_page.get_pixmap.return_value = mock_pix
+        mock_page.width = 612.0
+        mock_page.height = 792.0
+        mock_pi = MagicMock()
+        mock_pi.original = Image.new("RGB", (80, 100))
+        mock_page.to_image.return_value = mock_pi
 
         mock_cv2.cvtColor.return_value = np.zeros((100, 80), dtype=np.uint8)
         mock_cv2.adaptiveThreshold.return_value = np.zeros((100, 80), dtype=np.uint8)
@@ -160,12 +156,9 @@ class TestOpenCVLayoutAnalyzerAnalyzePage:
         mock_cv2.add.return_value = np.zeros((100, 80), dtype=np.uint8)
         mock_cv2.dilate.return_value = np.zeros((100, 80), dtype=np.uint8)
         mock_cv2.findContours.return_value = ([], None)
-        mock_page.get_images.return_value = []
+        mock_page.images = []
 
-        # Two blocks: one normal and one bold at >= median * 1.1
-        # Many spans at size 10 to establish a median of 10.0
-        # Bold block at size 12.0 >= 10.0 * 1.1 = 11.0 and single line
-        mock_page.get_text.return_value = {
+        text_dict = {
             "blocks": [
                 {
                     "type": 0,
@@ -186,23 +179,27 @@ class TestOpenCVLayoutAnalyzerAnalyzePage:
             ]
         }
 
-        regions = analyzer.analyze_page(mock_page)
+        with patch(
+            "app.modules.parsers.pdf.opencv_layout_analyzer._build_text_dict_from_pdfplumber_page",
+            return_value=text_dict,
+        ):
+            regions = analyzer.analyze_page(mock_page)
         heading_regions = [r for r in regions if r.type.value == "heading"]
         assert len(heading_regions) >= 1
 
     @patch("app.modules.parsers.pdf.opencv_layout_analyzer.cv2")
     def test_analyze_page_in_table_block_skipped(self, mock_cv2):
         """Blocks inside table regions are skipped in _collect_unclaimed_text_blocks."""
+        from PIL import Image
+
         analyzer = self._make_analyzer()
 
         mock_page = MagicMock()
-        mock_page.rect.width = 612.0
-        mock_page.rect.height = 792.0
-        mock_pix = MagicMock()
-        mock_pix.height = 100
-        mock_pix.width = 80
-        mock_pix.samples = np.zeros(100 * 80 * 3, dtype=np.uint8).tobytes()
-        mock_page.get_pixmap.return_value = mock_pix
+        mock_page.width = 612.0
+        mock_page.height = 792.0
+        mock_pi = MagicMock()
+        mock_pi.original = Image.new("RGB", (80, 100))
+        mock_page.to_image.return_value = mock_pi
 
         mock_cv2.cvtColor.return_value = np.zeros((100, 80), dtype=np.uint8)
         mock_cv2.adaptiveThreshold.return_value = np.zeros((100, 80), dtype=np.uint8)
@@ -211,10 +208,13 @@ class TestOpenCVLayoutAnalyzerAnalyzePage:
         mock_cv2.add.return_value = np.zeros((100, 80), dtype=np.uint8)
         mock_cv2.dilate.return_value = np.zeros((100, 80), dtype=np.uint8)
         mock_cv2.findContours.return_value = ([], None)
-        mock_page.get_images.return_value = []
-        mock_page.get_text.return_value = {"blocks": []}
+        mock_page.images = []
 
-        regions = analyzer.analyze_page(mock_page)
+        with patch(
+            "app.modules.parsers.pdf.opencv_layout_analyzer._build_text_dict_from_pdfplumber_page",
+            return_value={"blocks": []},
+        ):
+            regions = analyzer.analyze_page(mock_page)
         assert isinstance(regions, list)
 
     @patch("app.modules.parsers.pdf.opencv_layout_analyzer.cv2")
@@ -354,111 +354,136 @@ class TestOpenCVLayoutAnalyzerAnalyzePage:
         assert isinstance(result, list)
 
     def test_extract_image_regions_with_images(self):
-        """_extract_image_regions extracts valid images."""
+        """_extract_image_regions extracts valid images via page-crop fallback."""
+        from PIL import Image
+
         analyzer = self._make_analyzer()
         mock_page = MagicMock()
-        mock_page.get_images.return_value = [(42, 0, 100, 100, 8, "DeviceRGB", "", "")]
-
-        mock_rect = MagicMock()
-        mock_rect.x0 = 50.0
-        mock_rect.y0 = 50.0
-        mock_rect.x1 = 250.0
-        mock_rect.y1 = 250.0
-        mock_page.get_image_rects.return_value = [mock_rect]
-
-        mock_parent = MagicMock()
-        mock_parent.extract_image.return_value = {"image": b"fake-image", "ext": "png"}
-        mock_page.parent = mock_parent
+        mock_page.images = [
+            {"x0": 50.0, "top": 50.0, "x1": 250.0, "bottom": 250.0},
+        ]
+        mock_cropped = MagicMock()
+        mock_cropped.to_image.return_value.original = Image.new("RGB", (20, 20))
+        mock_page.crop.return_value = mock_cropped
 
         result = analyzer._extract_image_regions(mock_page, [], 612.0, 792.0)
         assert len(result) == 1
-        assert result[0]["data"] == b"fake-image"
         assert result[0]["ext"] == "png"
+        assert len(result[0]["data"]) > 0
 
     def test_extract_image_regions_too_small(self):
         """_extract_image_regions rejects images that are too small."""
         analyzer = self._make_analyzer()
         mock_page = MagicMock()
-        mock_page.get_images.return_value = [(42, 0, 10, 10, 8, "DeviceRGB", "", "")]
-
-        mock_rect = MagicMock()
-        mock_rect.x0 = 0.0
-        mock_rect.y0 = 0.0
-        mock_rect.x1 = 1.0
-        mock_rect.y1 = 1.0
-        mock_page.get_image_rects.return_value = [mock_rect]
+        mock_page.images = [
+            {"x0": 0.0, "top": 0.0, "x1": 2.0, "bottom": 2.0},
+        ]
 
         result = analyzer._extract_image_regions(mock_page, [], 612.0, 792.0)
         assert result == []
 
     def test_extract_image_regions_in_table(self):
         """_extract_image_regions skips images overlapping tables."""
+        from PIL import Image
+
         analyzer = self._make_analyzer()
         mock_page = MagicMock()
-        mock_page.get_images.return_value = [(42, 0, 100, 100, 8, "DeviceRGB", "", "")]
+        mock_page.images = [
+            {"x0": 50.0, "top": 50.0, "x1": 250.0, "bottom": 250.0},
+        ]
+        mock_cropped = MagicMock()
+        mock_cropped.to_image.return_value.original = Image.new("RGB", (20, 20))
+        mock_page.crop.return_value = mock_cropped
 
-        mock_rect = MagicMock()
-        mock_rect.x0 = 50.0
-        mock_rect.y0 = 50.0
-        mock_rect.x1 = 250.0
-        mock_rect.y1 = 250.0
-        mock_page.get_image_rects.return_value = [mock_rect]
-
-        # Table rect that fully contains the image rect
         table_rects = [(0.0, 0.0, 612.0, 792.0)]
 
         result = analyzer._extract_image_regions(mock_page, table_rects, 612.0, 792.0)
         assert result == []
 
     def test_extract_image_regions_no_rects(self):
-        """_extract_image_regions handles images with no rects."""
+        """_extract_image_regions handles pages with no image objects."""
         analyzer = self._make_analyzer()
         mock_page = MagicMock()
-        mock_page.get_images.return_value = [(42, 0, 100, 100, 8, "DeviceRGB", "", "")]
-        mock_page.get_image_rects.return_value = []
+        mock_page.images = []
 
         result = analyzer._extract_image_regions(mock_page, [], 612.0, 792.0)
         assert result == []
 
     def test_extract_image_regions_extraction_error(self):
-        """_extract_image_regions handles extraction errors gracefully."""
+        """_extract_image_regions handles rasterization errors gracefully."""
         analyzer = self._make_analyzer()
         mock_page = MagicMock()
-        mock_page.get_images.return_value = [(42, 0, 100, 100, 8, "DeviceRGB", "", "")]
-
-        mock_rect = MagicMock()
-        mock_rect.x0 = 50.0
-        mock_rect.y0 = 50.0
-        mock_rect.x1 = 250.0
-        mock_rect.y1 = 250.0
-        mock_page.get_image_rects.return_value = [mock_rect]
-
-        mock_parent = MagicMock()
-        mock_parent.extract_image.side_effect = RuntimeError("extraction failed")
-        mock_page.parent = mock_parent
+        mock_page.images = [
+            {"x0": 50.0, "top": 50.0, "x1": 250.0, "bottom": 250.0},
+        ]
+        mock_page.crop.side_effect = RuntimeError("rasterization failed")
 
         result = analyzer._extract_image_regions(mock_page, [], 612.0, 792.0)
         assert result == []
 
     def test_extract_image_regions_no_image_data(self):
-        """_extract_image_regions skips when extract_image returns empty."""
+        """_extract_image_regions skips when rasterization yields nothing."""
         analyzer = self._make_analyzer()
         mock_page = MagicMock()
-        mock_page.get_images.return_value = [(42, 0, 100, 100, 8, "DeviceRGB", "", "")]
-
-        mock_rect = MagicMock()
-        mock_rect.x0 = 50.0
-        mock_rect.y0 = 50.0
-        mock_rect.x1 = 250.0
-        mock_rect.y1 = 250.0
-        mock_page.get_image_rects.return_value = [mock_rect]
-
-        mock_parent = MagicMock()
-        mock_parent.extract_image.return_value = {"image": None}
-        mock_page.parent = mock_parent
+        mock_page.images = [
+            {"x0": 50.0, "top": 50.0, "x1": 250.0, "bottom": 250.0},
+        ]
+        mock_cropped = MagicMock()
+        mock_cropped.to_image.side_effect = RuntimeError("to_image failed")
+        mock_page.crop.return_value = mock_cropped
 
         result = analyzer._extract_image_regions(mock_page, [], 612.0, 792.0)
         assert result == []
+
+    def test_extract_image_from_pdf_stream(self):
+        """Stream extraction produces pixel-perfect image without page crop."""
+        from io import BytesIO
+        from PIL import Image
+
+        analyzer = self._make_analyzer()
+
+        test_img = Image.new("RGB", (50, 50), (255, 0, 0))
+        jpeg_buf = BytesIO()
+        test_img.save(jpeg_buf, format="JPEG")
+        jpeg_bytes = jpeg_buf.getvalue()
+
+        mock_stream = MagicMock()
+        mock_stream.get_data.return_value = jpeg_bytes
+
+        mock_page = MagicMock()
+        mock_page.images = [
+            {"x0": 50.0, "top": 50.0, "x1": 250.0, "bottom": 250.0,
+             "stream": mock_stream},
+        ]
+
+        result = analyzer._extract_image_regions(mock_page, [], 612.0, 792.0)
+        assert len(result) == 1
+        assert result[0]["ext"] == "png"
+        assert len(result[0]["data"]) > 0
+        assert result[0]["bbox"] == (50.0, 50.0, 250.0, 250.0)
+        mock_page.crop.assert_not_called()
+
+    def test_extract_image_stream_fallback_on_bad_stream(self):
+        """Falls back to page crop when stream.get_data() returns unusable data."""
+        from PIL import Image
+
+        analyzer = self._make_analyzer()
+
+        mock_stream = MagicMock()
+        mock_stream.get_data.return_value = b"not-a-real-image"
+
+        mock_page = MagicMock()
+        mock_page.images = [
+            {"x0": 50.0, "top": 50.0, "x1": 250.0, "bottom": 250.0,
+             "stream": mock_stream},
+        ]
+        mock_cropped = MagicMock()
+        mock_cropped.to_image.return_value.original = Image.new("RGB", (20, 20))
+        mock_page.crop.return_value = mock_cropped
+
+        result = analyzer._extract_image_regions(mock_page, [], 612.0, 792.0)
+        assert len(result) == 1
+        mock_page.crop.assert_called_once()
 
     def test_get_text_blocks_for_region_no_bbox(self):
         """_get_text_blocks_for_region skips blocks without bbox."""
@@ -579,16 +604,16 @@ class TestOpenCVLayoutAnalyzerTextClassification:
     @patch("app.modules.parsers.pdf.opencv_layout_analyzer.cv2")
     def test_analyze_page_list_region(self, mock_cv2):
         """analyze_page creates list region when text matches list pattern."""
+        from PIL import Image
+
         analyzer = self._make_analyzer()
 
         mock_page = MagicMock()
-        mock_page.rect.width = 612.0
-        mock_page.rect.height = 792.0
-        mock_pix = MagicMock()
-        mock_pix.height = 100
-        mock_pix.width = 80
-        mock_pix.samples = np.zeros(100 * 80 * 3, dtype=np.uint8).tobytes()
-        mock_page.get_pixmap.return_value = mock_pix
+        mock_page.width = 612.0
+        mock_page.height = 792.0
+        mock_pi = MagicMock()
+        mock_pi.original = Image.new("RGB", (80, 100))
+        mock_page.to_image.return_value = mock_pi
 
         mock_cv2.cvtColor.return_value = np.zeros((100, 80), dtype=np.uint8)
         mock_cv2.adaptiveThreshold.return_value = np.zeros((100, 80), dtype=np.uint8)
@@ -597,14 +622,13 @@ class TestOpenCVLayoutAnalyzerTextClassification:
         mock_cv2.add.return_value = np.zeros((100, 80), dtype=np.uint8)
         mock_cv2.dilate.return_value = np.zeros((100, 80), dtype=np.uint8)
 
-        # One text region contour
         cnt = np.array([[[5, 5]], [[395, 5]], [[395, 95]], [[5, 95]]], dtype=np.int32)
         mock_cv2.findContours.side_effect = [
-            ([], None),  # tables
-            ([cnt], None),  # text regions
+            ([], None),
+            ([cnt], None),
         ]
         mock_cv2.boundingRect.return_value = (5, 5, 390, 90)
-        mock_page.get_images.return_value = []
+        mock_page.images = []
 
         from app.modules.parsers.pdf.opencv_layout_analyzer import _pixel_to_pdf
         bbox_x0 = _pixel_to_pdf(5, 150)
@@ -612,8 +636,7 @@ class TestOpenCVLayoutAnalyzerTextClassification:
         bbox_x1 = _pixel_to_pdf(395, 150)
         bbox_y1 = _pixel_to_pdf(95, 150)
 
-        # Text dict with a list-like text block overlapping the detected region
-        mock_page.get_text.return_value = {
+        text_dict = {
             "blocks": [{
                 "type": 0,
                 "bbox": (bbox_x0, bbox_y0, bbox_x1, bbox_y1),
@@ -625,7 +648,11 @@ class TestOpenCVLayoutAnalyzerTextClassification:
             }]
         }
 
-        regions = analyzer.analyze_page(mock_page)
+        with patch(
+            "app.modules.parsers.pdf.opencv_layout_analyzer._build_text_dict_from_pdfplumber_page",
+            return_value=text_dict,
+        ):
+            regions = analyzer.analyze_page(mock_page)
         list_regions = [r for r in regions if r.type.value == "list"]
         assert len(list_regions) >= 1
 
@@ -635,13 +662,12 @@ class TestOpenCVLayoutAnalyzerTextClassification:
         analyzer = self._make_analyzer()
 
         mock_page = MagicMock()
-        mock_page.rect.width = 612.0
-        mock_page.rect.height = 792.0
-        mock_pix = MagicMock()
-        mock_pix.height = 100
-        mock_pix.width = 80
-        mock_pix.samples = np.zeros(100 * 80 * 3, dtype=np.uint8).tobytes()
-        mock_page.get_pixmap.return_value = mock_pix
+        mock_page.width = 612.0
+        mock_page.height = 792.0
+        from PIL import Image
+        mock_pi = MagicMock()
+        mock_pi.original = Image.new("RGB", (80, 100))
+        mock_page.to_image.return_value = mock_pi
 
         mock_cv2.cvtColor.return_value = np.zeros((100, 80), dtype=np.uint8)
         mock_cv2.adaptiveThreshold.return_value = np.zeros((100, 80), dtype=np.uint8)
@@ -656,7 +682,7 @@ class TestOpenCVLayoutAnalyzerTextClassification:
             ([cnt], None),  # text
         ]
         mock_cv2.boundingRect.return_value = (5, 5, 390, 25)
-        mock_page.get_images.return_value = []
+        mock_page.images = []
 
         from app.modules.parsers.pdf.opencv_layout_analyzer import _pixel_to_pdf
         bbox_x0 = _pixel_to_pdf(5, 150)
@@ -664,39 +690,42 @@ class TestOpenCVLayoutAnalyzerTextClassification:
         bbox_x1 = _pixel_to_pdf(395, 150)
         bbox_y1 = _pixel_to_pdf(30, 150)
 
-        # Block with large font (>= median*1.3, median = 12 from other blocks)
-        mock_page.get_text.return_value = {
+        text_dict = {
             "blocks": [
                 {
                     "type": 0,
                     "bbox": (bbox_x0, bbox_y0, bbox_x1, bbox_y1),
-                    "lines": [{"spans": [{"text": "Big Title", "size": 24.0, "flags": 0}]}]
+                    "lines": [{"spans": [{"text": "Big Title", "size": 24.0, "flags": 0}]}],
                 },
                 {
                     "type": 0,
                     "bbox": (100, 200, 300, 250),
-                    "lines": [{"spans": [{"text": "Body text", "size": 12.0, "flags": 0}]}]
+                    "lines": [{"spans": [{"text": "Body text", "size": 12.0, "flags": 0}]}],
                 },
             ]
         }
 
-        regions = analyzer.analyze_page(mock_page)
+        with patch(
+            "app.modules.parsers.pdf.opencv_layout_analyzer._build_text_dict_from_pdfplumber_page",
+            return_value=text_dict,
+        ):
+            regions = analyzer.analyze_page(mock_page)
         heading_regions = [r for r in regions if r.type.value == "heading"]
         assert len(heading_regions) >= 1
 
     @patch("app.modules.parsers.pdf.opencv_layout_analyzer.cv2")
     def test_analyze_page_image_not_in_text(self, mock_cv2):
-        """Images not overlapping text regions are added as image regions."""
+        """Embedded pdfplumber images produce IMAGE regions with OpenCV defaults."""
+        from PIL import Image
+
         analyzer = self._make_analyzer()
 
         mock_page = MagicMock()
-        mock_page.rect.width = 612.0
-        mock_page.rect.height = 792.0
-        mock_pix = MagicMock()
-        mock_pix.height = 100
-        mock_pix.width = 80
-        mock_pix.samples = np.zeros(100 * 80 * 3, dtype=np.uint8).tobytes()
-        mock_page.get_pixmap.return_value = mock_pix
+        mock_page.width = 612.0
+        mock_page.height = 792.0
+        mock_pi = MagicMock()
+        mock_pi.original = Image.new("RGB", (80, 100))
+        mock_page.to_image.return_value = mock_pi
 
         mock_cv2.cvtColor.return_value = np.zeros((100, 80), dtype=np.uint8)
         mock_cv2.adaptiveThreshold.return_value = np.zeros((100, 80), dtype=np.uint8)
@@ -706,27 +735,65 @@ class TestOpenCVLayoutAnalyzerTextClassification:
         mock_cv2.dilate.return_value = np.zeros((100, 80), dtype=np.uint8)
         mock_cv2.findContours.return_value = ([], None)
 
-        # One image
-        mock_page.get_images.return_value = [(42, 0, 200, 200, 8, "DeviceRGB", "", "")]
-        mock_rect = MagicMock()
-        mock_rect.x0 = 100.0
-        mock_rect.y0 = 100.0
-        mock_rect.x1 = 400.0
-        mock_rect.y1 = 400.0
-        mock_page.get_image_rects.return_value = [mock_rect]
-        mock_parent = MagicMock()
-        mock_parent.extract_image.return_value = {"image": b"img-data", "ext": "jpg"}
-        mock_page.parent = mock_parent
+        mock_page.images = [
+            {"x0": 100.0, "top": 100.0, "x1": 400.0, "bottom": 400.0},
+        ]
+        mock_cropped = MagicMock()
+        mock_cropped.to_image.return_value.original = Image.new("RGB", (20, 20))
+        mock_page.crop.return_value = mock_cropped
 
-        mock_page.get_text.return_value = {"blocks": []}
+        with patch(
+            "app.modules.parsers.pdf.opencv_layout_analyzer._build_text_dict_from_pdfplumber_page",
+            return_value={"blocks": []},
+        ):
+            regions = analyzer.analyze_page(mock_page)
+        image_regions = [r for r in regions if r.type.value == "image"]
+        assert len(image_regions) == 1
 
-        regions = analyzer.analyze_page(mock_page)
+    @patch("app.modules.parsers.pdf.opencv_layout_analyzer.cv2")
+    def test_analyze_page_image_kept_when_opencv_text_overlaps(self, mock_cv2):
+        """Embedded PDF images stay detected even when OpenCV text rects overlap heavily."""
+        from PIL import Image
+
+        analyzer = self._make_analyzer()
+
+        mock_page = MagicMock()
+        mock_page.width = 612.0
+        mock_page.height = 792.0
+        mock_pi = MagicMock()
+        mock_pi.original = Image.new("RGB", (80, 100))
+        mock_page.to_image.return_value = mock_pi
+
+        mock_cv2.cvtColor.return_value = np.zeros((100, 80), dtype=np.uint8)
+        mock_cv2.adaptiveThreshold.return_value = np.zeros((100, 80), dtype=np.uint8)
+        mock_cv2.morphologyEx.return_value = np.zeros((100, 80), dtype=np.uint8)
+        mock_cv2.getStructuringElement.return_value = np.ones((3, 10), dtype=np.uint8)
+        mock_cv2.add.return_value = np.zeros((100, 80), dtype=np.uint8)
+        mock_cv2.dilate.return_value = np.zeros((100, 80), dtype=np.uint8)
+        mock_cv2.findContours.return_value = ([], None)
+
+        mock_page.images = [
+            {"x0": 100.0, "top": 100.0, "x1": 400.0, "bottom": 400.0},
+        ]
+        mock_cropped = MagicMock()
+        mock_cropped.to_image.return_value.original = Image.new("RGB", (20, 20))
+        mock_page.crop.return_value = mock_cropped
+
+        with patch.object(analyzer, "_detect_table_regions", return_value=[]), patch.object(
+            analyzer,
+            "_detect_text_regions",
+            return_value=[(99.0, 99.0, 401.0, 401.0)],
+        ), patch(
+            "app.modules.parsers.pdf.opencv_layout_analyzer._build_text_dict_from_pdfplumber_page",
+            return_value={"blocks": []},
+        ):
+            regions = analyzer.analyze_page(mock_page)
         image_regions = [r for r in regions if r.type.value == "image"]
         assert len(image_regions) == 1
 
 
 # ============================================================================
-# PyMuPDFOpenCVProcessor — covering _extract_tables_with_pymupdf,
+# PyMuPDFOpenCVProcessor — covering _extract_tables_with_pdfplumber,
 #   create_blocks branch coverage, load_document
 # ============================================================================
 
@@ -737,10 +804,13 @@ class TestPyMuPDFOpenCVProcessorExtended:
             from app.modules.parsers.pdf.pymupdf_opencv_processor import PyMuPDFOpenCVProcessor
             return PyMuPDFOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
 
-    def test_extract_tables_with_pymupdf_matches_existing_region(self):
-        """_extract_tables_with_pymupdf matches a table to an existing TABLE region."""
+    def test_extract_tables_with_pdfplumber_matches_existing_region(self):
+        """_extract_tables_with_pdfplumber matches a table to an existing TABLE region."""
         from app.modules.parsers.pdf.pymupdf_opencv_processor import (
-            LayoutRegion, LayoutRegionType, ParsedPageData, PyMuPDFOpenCVProcessor,
+            LayoutRegion,
+            LayoutRegionType,
+            ParsedPageData,
+            PyMuPDFOpenCVProcessor,
         )
         with patch("app.modules.parsers.pdf.pymupdf_opencv_processor.OpenCVLayoutAnalyzer"):
             proc = PyMuPDFOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
@@ -752,25 +822,25 @@ class TestPyMuPDFOpenCVProcessorExtended:
         # Mock doc and page
         mock_doc = MagicMock()
         mock_page = MagicMock()
-        mock_doc.__getitem__ = lambda s, i: mock_page
+        mock_doc.pages = [mock_page]
 
         # Mock table finder
         mock_table = MagicMock()
         mock_table.bbox = (50, 50, 300, 200)
         mock_table.extract.return_value = [["A", "B"], ["1", "2"]]
-        mock_table_finder = MagicMock()
-        mock_table_finder.tables = [mock_table]
-        mock_page.find_tables.return_value = mock_table_finder
+        mock_page.find_tables.return_value = [mock_table]
 
-        proc._extract_tables_with_pymupdf(mock_doc, [pd])
+        proc._extract_tables_with_pdfplumber(mock_doc, [pd])
 
         # The existing region should have its grid updated
         assert existing_region.table_grid == [["A", "B"], ["1", "2"]]
 
-    def test_extract_tables_with_pymupdf_new_table(self):
-        """_extract_tables_with_pymupdf adds new TABLE region when no match found."""
+    def test_extract_tables_with_pdfplumber_new_table(self):
+        """_extract_tables_with_pdfplumber adds new TABLE region when no match found."""
         from app.modules.parsers.pdf.pymupdf_opencv_processor import (
-            LayoutRegion, LayoutRegionType, ParsedPageData, PyMuPDFOpenCVProcessor,
+            LayoutRegionType,
+            ParsedPageData,
+            PyMuPDFOpenCVProcessor,
         )
         with patch("app.modules.parsers.pdf.pymupdf_opencv_processor.OpenCVLayoutAnalyzer"):
             proc = PyMuPDFOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
@@ -779,25 +849,24 @@ class TestPyMuPDFOpenCVProcessorExtended:
 
         mock_doc = MagicMock()
         mock_page = MagicMock()
-        mock_doc.__getitem__ = lambda s, i: mock_page
+        mock_doc.pages = [mock_page]
 
         mock_table = MagicMock()
         mock_table.bbox = (100, 100, 400, 300)
         mock_table.extract.return_value = [["X", "Y"]]
-        mock_table_finder = MagicMock()
-        mock_table_finder.tables = [mock_table]
-        mock_page.find_tables.return_value = mock_table_finder
+        mock_page.find_tables.return_value = [mock_table]
 
-        proc._extract_tables_with_pymupdf(mock_doc, [pd])
+        proc._extract_tables_with_pdfplumber(mock_doc, [pd])
 
         assert len(pd.regions) == 1
         assert pd.regions[0].type == LayoutRegionType.TABLE
         assert pd.regions[0].table_grid == [["X", "Y"]]
 
     def test_extract_tables_find_tables_error(self):
-        """_extract_tables_with_pymupdf handles find_tables error."""
+        """_extract_tables_with_pdfplumber handles find_tables error."""
         from app.modules.parsers.pdf.pymupdf_opencv_processor import (
-            ParsedPageData, PyMuPDFOpenCVProcessor,
+            ParsedPageData,
+            PyMuPDFOpenCVProcessor,
         )
         with patch("app.modules.parsers.pdf.pymupdf_opencv_processor.OpenCVLayoutAnalyzer"):
             proc = PyMuPDFOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
@@ -806,10 +875,10 @@ class TestPyMuPDFOpenCVProcessorExtended:
 
         mock_doc = MagicMock()
         mock_page = MagicMock()
-        mock_doc.__getitem__ = lambda s, i: mock_page
+        mock_doc.pages = [mock_page]
         mock_page.find_tables.side_effect = RuntimeError("no tables")
 
-        proc._extract_tables_with_pymupdf(mock_doc, [pd])
+        proc._extract_tables_with_pdfplumber(mock_doc, [pd])
         assert len(pd.regions) == 0
 
     @pytest.mark.asyncio
@@ -890,16 +959,19 @@ class TestPyMuPDFOpenCVProcessorExtended:
 
             proc = PyMuPDFOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
 
-            mock_doc = MagicMock()
-            mock_doc.__len__ = lambda s: 1
+            mock_pdf = MagicMock()
             mock_page = MagicMock()
-            mock_page.rect.width = 612
-            mock_page.rect.height = 792
-            mock_doc.__getitem__ = lambda s, i: mock_page
-            mock_doc.close = MagicMock()
+            mock_page.width = 612
+            mock_page.height = 792
+            mock_pdf.pages = [mock_page]
+            mock_ctx = MagicMock()
+            mock_ctx.__enter__.return_value = mock_pdf
+            mock_ctx.__exit__.return_value = None
 
-            with patch("app.modules.parsers.pdf.pymupdf_opencv_processor.fitz") as mock_fitz:
-                mock_fitz.open.return_value = mock_doc
+            with patch(
+                "app.modules.parsers.pdf.pymupdf_opencv_processor.pdfplumber.open",
+                return_value=mock_ctx,
+            ):
                 result = await proc.parse_document("test.pdf", BytesIO(b"fake-pdf-bytes"))
 
             assert len(result) == 1
@@ -1783,12 +1855,15 @@ class TestAzureOCRStrategyExtended:
 # ============================================================================
 
 class TestPyMuPDFOpenCVProcessorExtraTables:
-    """Extra tests for _extract_tables_with_pymupdf non-TABLE region skip (line 127)."""
+    """Extra tests for _extract_tables_with_pdfplumber non-TABLE region skip (line 127)."""
 
     def test_extract_tables_skips_non_table_regions(self):
         """Non-TABLE regions are skipped when matching tables."""
         from app.modules.parsers.pdf.pymupdf_opencv_processor import (
-            LayoutRegion, LayoutRegionType, ParsedPageData, PyMuPDFOpenCVProcessor,
+            LayoutRegion,
+            LayoutRegionType,
+            ParsedPageData,
+            PyMuPDFOpenCVProcessor,
         )
         with patch("app.modules.parsers.pdf.pymupdf_opencv_processor.OpenCVLayoutAnalyzer"):
             proc = PyMuPDFOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
@@ -1799,18 +1874,227 @@ class TestPyMuPDFOpenCVProcessorExtraTables:
 
         mock_doc = MagicMock()
         mock_page = MagicMock()
-        mock_doc.__getitem__ = lambda s, i: mock_page
+        mock_doc.pages = [mock_page]
 
         mock_table = MagicMock()
         mock_table.bbox = (50, 50, 300, 200)
         mock_table.extract.return_value = [["A", "B"]]
-        mock_table_finder = MagicMock()
-        mock_table_finder.tables = [mock_table]
-        mock_page.find_tables.return_value = mock_table_finder
+        mock_page.find_tables.return_value = [mock_table]
 
-        proc._extract_tables_with_pymupdf(mock_doc, [pd])
+        proc._extract_tables_with_pdfplumber(mock_doc, [pd])
 
         # Since there's no TABLE region, a new one should be added
         table_regions = [r for r in pd.regions if r.type == LayoutRegionType.TABLE]
         assert len(table_regions) == 1
+
+
+# ============================================================================
+# OpenCV graphic detection — contours with no/sparse text → IMAGE
+# ============================================================================
+
+class TestOpenCVGraphicDetection:
+    """Tests for graphic detection via text-coverage check in analyze_page."""
+
+    def _make_analyzer(self):
+        from app.modules.parsers.pdf.opencv_layout_analyzer import OpenCVLayoutAnalyzer
+        return OpenCVLayoutAnalyzer(logger=_mock_logger(), render_dpi=150)
+
+    @patch("app.modules.parsers.pdf.opencv_layout_analyzer.cv2")
+    def test_large_contour_no_text_becomes_image(self, mock_cv2):
+        """A large OpenCV contour with no matching text blocks is rasterized as IMAGE."""
+        from PIL import Image
+        from app.modules.parsers.pdf.opencv_layout_analyzer import _pixel_to_pdf
+
+        analyzer = self._make_analyzer()
+
+        mock_page = MagicMock()
+        mock_page.width = 612.0
+        mock_page.height = 792.0
+        mock_pi = MagicMock()
+        mock_pi.original = Image.new("RGB", (640, 825))
+        mock_page.to_image.return_value = mock_pi
+
+        mock_cv2.cvtColor.return_value = np.zeros((825, 640), dtype=np.uint8)
+        mock_cv2.adaptiveThreshold.return_value = np.zeros((825, 640), dtype=np.uint8)
+        mock_cv2.morphologyEx.return_value = np.zeros((825, 640), dtype=np.uint8)
+        mock_cv2.getStructuringElement.return_value = np.ones((3, 16), dtype=np.uint8)
+        mock_cv2.add.return_value = np.zeros((825, 640), dtype=np.uint8)
+        mock_cv2.dilate.return_value = np.zeros((825, 640), dtype=np.uint8)
+
+        chart_cnt = np.array([[[80, 200]], [[420, 200]], [[420, 500]], [[80, 500]]], dtype=np.int32)
+        mock_cv2.findContours.side_effect = [
+            ([], None),
+            ([chart_cnt], None),
+        ]
+        mock_cv2.boundingRect.return_value = (80, 200, 340, 300)
+        mock_page.images = []
+
+        mock_cropped = MagicMock()
+        mock_cropped.to_image.return_value.original = Image.new("RGB", (340, 300))
+        mock_page.crop.return_value = mock_cropped
+
+        with patch(
+            "app.modules.parsers.pdf.opencv_layout_analyzer._build_text_dict_from_pdfplumber_page",
+            return_value={"blocks": []},
+        ):
+            regions = analyzer.analyze_page(mock_page)
+
+        image_regions = [r for r in regions if r.type.value == "image"]
+        assert len(image_regions) == 1
+        assert image_regions[0].image_data is not None
+
+    @patch("app.modules.parsers.pdf.opencv_layout_analyzer.cv2")
+    def test_large_contour_with_partial_text_overlap_not_image(self, mock_cv2):
+        """A large contour where text blocks partially overlap (below 30% match
+        threshold) but cover > 2% of the contour area is NOT rasterized as IMAGE.
+        This prevents duplication where the same text appears as both an IMAGE
+        (rasterized pixels) and a TEXT block (from unclaimed text collection)."""
+        from PIL import Image
+        from app.modules.parsers.pdf.opencv_layout_analyzer import _pixel_to_pdf
+
+        analyzer = self._make_analyzer()
+
+        mock_page = MagicMock()
+        mock_page.width = 612.0
+        mock_page.height = 792.0
+        mock_pi = MagicMock()
+        mock_pi.original = Image.new("RGB", (640, 825))
+        mock_page.to_image.return_value = mock_pi
+
+        mock_cv2.cvtColor.return_value = np.zeros((825, 640), dtype=np.uint8)
+        mock_cv2.adaptiveThreshold.return_value = np.zeros((825, 640), dtype=np.uint8)
+        mock_cv2.morphologyEx.return_value = np.zeros((825, 640), dtype=np.uint8)
+        mock_cv2.getStructuringElement.return_value = np.ones((3, 16), dtype=np.uint8)
+        mock_cv2.add.return_value = np.zeros((825, 640), dtype=np.uint8)
+        mock_cv2.dilate.return_value = np.zeros((825, 640), dtype=np.uint8)
+
+        cnt = np.array([[[80, 200]], [[340, 200]], [[340, 300]], [[80, 300]]], dtype=np.int32)
+        mock_cv2.findContours.side_effect = [
+            ([], None),
+            ([cnt], None),
+        ]
+        mock_cv2.boundingRect.return_value = (80, 200, 260, 100)
+        mock_page.images = []
+
+        rx0 = _pixel_to_pdf(80, 150)
+        ry0 = _pixel_to_pdf(200, 150)
+        rx1 = _pixel_to_pdf(340, 150)
+        ry1 = _pixel_to_pdf(300, 150)
+
+        wide_block_bbox = (10, ry0 + 2, 500, ry1 - 2)
+        block_area = (500 - 10) * (ry1 - 2 - ry0 - 2)
+        ix = (rx1 - rx0) * (ry1 - 2 - ry0 - 2)
+        assert ix / block_area < 0.3, "block overlap must be < 30% for this test"
+
+        region_area = (rx1 - rx0) * (ry1 - ry0)
+        assert ix / region_area > 0.02, "region coverage must be > 2% for this test"
+
+        text_dict = {
+            "blocks": [{
+                "type": 0,
+                "bbox": wide_block_bbox,
+                "lines": [{"spans": [{"text": "Table of Contents", "size": 12.0, "flags": 0}]}]
+            }]
+        }
+
+        with patch(
+            "app.modules.parsers.pdf.opencv_layout_analyzer._build_text_dict_from_pdfplumber_page",
+            return_value=text_dict,
+        ):
+            regions = analyzer.analyze_page(mock_page)
+
+        image_regions = [r for r in regions if r.type.value == "image"]
+        assert len(image_regions) == 0
+
+    @patch("app.modules.parsers.pdf.opencv_layout_analyzer.cv2")
+    def test_small_contour_no_text_still_dropped(self, mock_cv2):
+        """A small contour with no text is dropped (not large enough to be a graphic)."""
+        from PIL import Image
+
+        analyzer = self._make_analyzer()
+
+        mock_page = MagicMock()
+        mock_page.width = 612.0
+        mock_page.height = 792.0
+        mock_pi = MagicMock()
+        mock_pi.original = Image.new("RGB", (640, 825))
+        mock_page.to_image.return_value = mock_pi
+
+        mock_cv2.cvtColor.return_value = np.zeros((825, 640), dtype=np.uint8)
+        mock_cv2.adaptiveThreshold.return_value = np.zeros((825, 640), dtype=np.uint8)
+        mock_cv2.morphologyEx.return_value = np.zeros((825, 640), dtype=np.uint8)
+        mock_cv2.getStructuringElement.return_value = np.ones((3, 16), dtype=np.uint8)
+        mock_cv2.add.return_value = np.zeros((825, 640), dtype=np.uint8)
+        mock_cv2.dilate.return_value = np.zeros((825, 640), dtype=np.uint8)
+
+        tiny_cnt = np.array([[[10, 10]], [[20, 10]], [[20, 20]], [[10, 20]]], dtype=np.int32)
+        mock_cv2.findContours.side_effect = [
+            ([], None),
+            ([tiny_cnt], None),
+        ]
+        mock_cv2.boundingRect.return_value = (10, 10, 10, 10)
+        mock_page.images = []
+
+        with patch(
+            "app.modules.parsers.pdf.opencv_layout_analyzer._build_text_dict_from_pdfplumber_page",
+            return_value={"blocks": []},
+        ):
+            regions = analyzer.analyze_page(mock_page)
+
+        image_regions = [r for r in regions if r.type.value == "image"]
+        assert len(image_regions) == 0
+
+    @patch("app.modules.parsers.pdf.opencv_layout_analyzer.cv2")
+    def test_normal_text_not_misclassified_as_graphic(self, mock_cv2):
+        """A text-heavy region (high coverage) stays TEXT, not IMAGE."""
+        from PIL import Image
+        from app.modules.parsers.pdf.opencv_layout_analyzer import _pixel_to_pdf
+
+        analyzer = self._make_analyzer()
+
+        mock_page = MagicMock()
+        mock_page.width = 612.0
+        mock_page.height = 792.0
+        mock_pi = MagicMock()
+        mock_pi.original = Image.new("RGB", (640, 825))
+        mock_page.to_image.return_value = mock_pi
+
+        mock_cv2.cvtColor.return_value = np.zeros((825, 640), dtype=np.uint8)
+        mock_cv2.adaptiveThreshold.return_value = np.zeros((825, 640), dtype=np.uint8)
+        mock_cv2.morphologyEx.return_value = np.zeros((825, 640), dtype=np.uint8)
+        mock_cv2.getStructuringElement.return_value = np.ones((3, 16), dtype=np.uint8)
+        mock_cv2.add.return_value = np.zeros((825, 640), dtype=np.uint8)
+        mock_cv2.dilate.return_value = np.zeros((825, 640), dtype=np.uint8)
+
+        text_cnt = np.array([[[50, 50]], [[550, 50]], [[550, 150]], [[50, 150]]], dtype=np.int32)
+        mock_cv2.findContours.side_effect = [
+            ([], None),
+            ([text_cnt], None),
+        ]
+        mock_cv2.boundingRect.return_value = (50, 50, 500, 100)
+        mock_page.images = []
+
+        rx0 = _pixel_to_pdf(50, 150)
+        ry0 = _pixel_to_pdf(50, 150)
+        rx1 = _pixel_to_pdf(550, 150)
+        ry1 = _pixel_to_pdf(150, 150)
+
+        text_dict = {
+            "blocks": [{
+                "type": 0,
+                "bbox": (rx0 + 2, ry0 + 2, rx1 - 2, ry1 - 2),
+                "lines": [{"spans": [{"text": "This is a normal text paragraph.", "size": 12.0, "flags": 0}]}]
+            }]
+        }
+
+        with patch(
+            "app.modules.parsers.pdf.opencv_layout_analyzer._build_text_dict_from_pdfplumber_page",
+            return_value=text_dict,
+        ):
+            regions = analyzer.analyze_page(mock_page)
+
+        text_regions = [r for r in regions if r.type.value == "text"]
+        image_regions = [r for r in regions if r.type.value == "image"]
+        assert len(text_regions) >= 1
+        assert len(image_regions) == 0
 

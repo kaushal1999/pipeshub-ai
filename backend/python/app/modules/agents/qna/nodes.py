@@ -90,10 +90,11 @@ MAX_TOOL_DESCRIPTION_LENGTH = 200  # Maximum length for tool descriptions in pro
 _opik_tracer = None
 _opik_api_key = os.getenv("OPIK_API_KEY")
 _opik_workspace = os.getenv("OPIK_WORKSPACE")
+_opik_project_name = os.getenv("OPIK_PROJECT_NAME", "pipeshub")
 if _opik_api_key and _opik_workspace:
     try:
         from opik.integrations.langchain import OpikTracer
-        _opik_tracer = OpikTracer()
+        _opik_tracer = OpikTracer(project_name=_opik_project_name)
         logger.info("✅ Opik tracer initialized")
     except Exception as e:
         logger.warning(f"⚠️ Failed to initialize Opik tracer: {e}")

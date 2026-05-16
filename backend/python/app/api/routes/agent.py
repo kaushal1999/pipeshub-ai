@@ -45,10 +45,11 @@ router = APIRouter()
 _opik_tracer = None
 _opik_api_key = os.getenv("OPIK_API_KEY")
 _opik_workspace = os.getenv("OPIK_WORKSPACE")
+_opik_project_name = os.getenv("OPIK_PROJECT_NAME", "Default Project")
 if _opik_api_key and _opik_workspace:
     try:
         from opik.integrations.langchain import OpikTracer
-        _opik_tracer = OpikTracer()
+        _opik_tracer = OpikTracer(project_name=_opik_project_name)
     except Exception:
         pass
 # Constants

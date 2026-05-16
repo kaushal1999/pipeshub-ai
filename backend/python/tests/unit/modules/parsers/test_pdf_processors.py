@@ -174,17 +174,14 @@ class TestOpenCVLayoutAnalyzer:
         analyzer = self._make_analyzer()
         assert analyzer.render_dpi == 150
 
-    @patch("app.modules.parsers.pdf.opencv_layout_analyzer.cv2")
-    @patch("app.modules.parsers.pdf.opencv_layout_analyzer.fitz")
-    def test_render_page_to_image(self, mock_fitz, mock_cv2):
-        import numpy as np
+    def test_render_page_to_image(self):
+        from PIL import Image
+
         analyzer = self._make_analyzer()
         mock_page = MagicMock()
-        mock_pix = MagicMock()
-        mock_pix.height = 100
-        mock_pix.width = 80
-        mock_pix.samples = np.zeros(100 * 80 * 3, dtype=np.uint8).tobytes()
-        mock_page.get_pixmap.return_value = mock_pix
+        mock_pi = MagicMock()
+        mock_pi.original = Image.new("RGB", (80, 100))
+        mock_page.to_image.return_value = mock_pi
         result = analyzer._render_page_to_image(mock_page)
         assert result.shape == (100, 80, 3)
 
@@ -385,16 +382,19 @@ class TestPyMuPDFOpenCVProcessor:
 
             proc = PyMuPDFOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
 
-            mock_doc = MagicMock()
-            mock_doc.__len__ = lambda s: 1
             mock_page = MagicMock()
-            mock_page.rect.width = 612
-            mock_page.rect.height = 792
-            mock_doc.__getitem__ = lambda s, i: mock_page
-            mock_doc.close = MagicMock()
+            mock_page.width = 612
+            mock_page.height = 792
+            mock_pdf = MagicMock()
+            mock_pdf.pages = [mock_page]
+            mock_ctx = MagicMock()
+            mock_ctx.__enter__.return_value = mock_pdf
+            mock_ctx.__exit__.return_value = None
 
-            with patch("app.modules.parsers.pdf.pymupdf_opencv_processor.fitz") as mock_fitz:
-                mock_fitz.open.return_value = mock_doc
+            with patch(
+                "app.modules.parsers.pdf.pymupdf_opencv_processor.pdfplumber.open",
+                return_value=mock_ctx,
+            ):
                 result = await proc.parse_document("test.pdf", b"fake-pdf-bytes")
 
             assert len(result) == 1

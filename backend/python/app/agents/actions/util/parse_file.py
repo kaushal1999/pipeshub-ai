@@ -1,7 +1,9 @@
 """
 Parse supported file bytes into a ``BlocksContainer``, mirroring ``Processor`` flows.
 
-- PDF: ``PyMuPDFOpenCVProcessor.load_document`` (PyMuPDF + OpenCV), not Docling.
+- PDF: ``PyMuPDFOpenCVProcessor.load_document`` (pdfplumber + OpenCV), not Docling.
+  Set ``PIPESHUB_DEBUG_PDF_BLOCKS_OUT`` to a directory to write per-page PNG previews
+  with block bounding boxes and labels (see ``visualize_opencv_blocks``).
 - DOCX / PPTX / MD / (HTML→MD) / TXT: ``DoclingProcessor`` parse + ``create_blocks``.
 - DOC / XLS / PPT: OLE2 → OOXML via existing converters, then same as DOCX / XLSX / PPTX.
 - CSV / TSV: decode → ``read_raw_rows`` → ``find_tables_in_csv`` →
@@ -12,20 +14,23 @@ Parse supported file bytes into a ``BlocksContainer``, mirroring ``Processor`` f
 Only the extensions in ``SUPPORTED_BLOCK_FILE_EXTENSIONS`` are accepted.
 """
 
+
+
 from __future__ import annotations
 
 import io
 import logging
 from pathlib import Path
-from typing import Final, Optional, Union
+from typing import Final, Union
+
 from bs4 import BeautifulSoup
 from html_to_markdown import convert
 from pydantic import BaseModel
 
 from app.api.routes.chatbot import get_model_config
 from app.config.configuration_service import ConfigurationService
+from app.models.blocks import BlocksContainer, BlockType
 from app.models.entities import FileRecord, LlmTextContent
-from app.models.blocks import BlockType, BlocksContainer
 from app.modules.parsers.csv.csv_parser import CSVParser
 from app.modules.parsers.docx.docparser import DocParser
 from app.modules.parsers.excel.excel_parser import ExcelParser
@@ -173,7 +178,7 @@ class FileContentParser:
             "txt": self.handle_txt,
         }
         return await dispatch[ext_n](raw, file_name)
-    
+
     def is_supported_extension(self, extension: str) -> bool:
         return extension in self.SUPPORTED_EXTENSIONS
 
@@ -193,8 +198,8 @@ class FileContentParser:
 
     async def check_token_limit(
         self,
-        model_name: Optional[str],
-        model_key: Optional[str],
+        model_name: str | None,
+        model_key: str | None,
         configuration_service: ConfigurationService,
         data: list[LlmTextContent],
     ) -> bool:
@@ -218,8 +223,8 @@ class FileContentParser:
         self,
         file_record: FileRecord,
         raw: bytes,
-        model_name: Optional[str],
-        model_key: Optional[str],
+        model_name: str | None,
+        model_key: str | None,
         configuration_service: ConfigurationService,
     ) -> tuple[bool, list[LlmContextItem]]:
         """Return ``(True, llm_context)`` on success, or ``(False, error_list)``."""
@@ -269,7 +274,15 @@ class FileContentParser:
             else f"{file_name}.pdf"
         )
         processor = PyMuPDFOpenCVProcessor(logger=self._logger, config=self._config)
-        return await processor.load_document(name, raw)
+        container = await processor.load_document(name, raw)
+        from app.modules.parsers.pdf.visualize_opencv_blocks import (
+            maybe_write_pdf_debug_overlay,
+        )
+
+        maybe_write_pdf_debug_overlay(
+            raw, container, stem=Path(name).stem, log=self._logger
+        )
+        return container
 
     async def handle_docx(self, raw: bytes, file_name: str) -> BlocksContainer:
         processor = DoclingProcessor(logger=self._logger, config=self._config)
