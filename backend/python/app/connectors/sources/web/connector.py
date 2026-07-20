@@ -1155,6 +1155,18 @@ class WebConnector(BaseConnector):
                         max_size_mb=self.max_size_mb,
                     )
 
+                    if self._should_try_crawl4ai_fallback(raw_result):
+                        fetcher = await self._ensure_crawl4ai_fetcher()
+                        if fetcher:
+                            self.logger.info(
+                                "🌐 [crawl4ai fallback] Non-headless strategies failed for %s (status=%s) — trying headless",
+                                current_url,
+                                raw_result.status_code if raw_result else "connection error",
+                            )
+                            crawl4ai_resp = await self._headless_fetch(current_url)
+                            if crawl4ai_resp is not None and crawl4ai_resp.status_code < HttpStatusCode.BAD_REQUEST.value:
+                                raw_result = crawl4ai_resp
+
                     result = await self._validate_fetch_result(
                         current_url, current_depth, referer, raw_result
                     )
@@ -1191,6 +1203,27 @@ class WebConnector(BaseConnector):
                     self.logger.warning("⚠️ Failed to process %s: %s", current_url, e)
                     continue
 
+
+    def _should_try_crawl4ai_fallback(self, result: Optional[FetchResponse]) -> bool:
+        """Return True when non-headless strategies failed and crawl4ai is worth trying."""
+        if result is None:
+            return True  # Hard connection error — headless may succeed
+        if result.status_code < HttpStatusCode.BAD_REQUEST.value:
+            return False  # Already successful
+        # Genuinely absent pages — headless won't change the answer
+        if result.status_code in {404, 405, 410}:
+            return False
+        return True  # Bot-block, rate-limit, or server error — try headless
+
+    async def _ensure_crawl4ai_fetcher(self) -> Optional[Crawl4AIFetcher]:
+        """Return the shared crawl4ai fetcher, initialising it on first use."""
+        if self.crawl4ai_fetcher is None:
+            try:
+                self.crawl4ai_fetcher = await get_shared_fetcher()
+            except Exception as e:
+                self.logger.warning("⚠️ Failed to initialise crawl4ai fetcher for fallback: %s", e)
+                return None
+        return self.crawl4ai_fetcher
 
     def _is_rate_limited(
         self,
@@ -1493,6 +1526,17 @@ class WebConnector(BaseConnector):
                         timeout=15,
                         max_size_mb=self.max_size_mb,
                     )
+                    if self._should_try_crawl4ai_fallback(raw):
+                        fetcher = await self._ensure_crawl4ai_fetcher()
+                        if fetcher:
+                            self.logger.info(
+                                "🌐 [crawl4ai fallback] Non-headless strategies failed for %s (status=%s) — trying headless",
+                                url,
+                                raw.status_code if raw else "connection error",
+                            )
+                            crawl4ai_resp = await self._headless_fetch(url)
+                            if crawl4ai_resp is not None and crawl4ai_resp.status_code < HttpStatusCode.BAD_REQUEST.value:
+                                raw = crawl4ai_resp
                 result = await self._validate_fetch_result(url, depth, referer, raw)
                 if result is None:
                     return None
