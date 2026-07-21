@@ -1306,19 +1306,24 @@ class WebConnector(BaseConnector):
                 await probe.close()
 
             if not rendered.success or not (rendered.html or "").strip():
-                return False
+                self.logger.warning(
+                    "⚠️ CSR probe for %s returned no content, "
+                    "assuming CSR to be safe",
+                    url,
+                )
+                return True
 
             js_result = rendered.js_execution_result or {}
             pre_len = js_result.get("preLen", -1)
             post_len = js_result.get("postLen", 0)
 
             if pre_len < 0:
-                self.logger.debug(
-                    "🔍 CSR probe for %s: init script did not fire, "
-                    "falling back to SSR assumption",
+                self.logger.warning(
+                    "⚠️ CSR probe for %s: init script did not fire, "
+                    "assuming CSR to be safe",
                     url,
                 )
-                return False
+                return True
 
             analysis = analyze_rendering(pre_len, post_len)
 
@@ -1342,8 +1347,8 @@ class WebConnector(BaseConnector):
             return analysis.is_csr
 
         except Exception as e:
-            self.logger.warning("⚠️ CSR detection failed for %s: %s", url, e)
-            return False
+            self.logger.warning("⚠️ CSR detection failed for %s: %s — assuming CSR to be safe", url, e)
+            return True
 
     def _crawl4ai_result_to_response(self, fetch_result: FetchResult, url: str) -> Optional[FetchResponse]:
         status_code = resolve_fetch_status_code(
