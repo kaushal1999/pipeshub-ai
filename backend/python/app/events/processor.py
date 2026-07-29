@@ -686,19 +686,19 @@ class Processor:
 
     async def _enhance_tables_with_llm(self, block_containers: BlocksContainer) -> None:
         """
-        Enhance TABLE BlockGroups with LLM-generated summaries and row descriptions.
+        Enhance TABLE BlockGroups with LLM-generated summaries and per-row text.
 
         This method processes all TABLE BlockGroups in the container:
         - Generates table summary and enhanced column headers using LLM
-        - Generates natural language descriptions for each row
+        - Builds "column: value" text for each row (no LLM call)
         - Updates BlockGroup and Block data with enhanced content
 
         Args:
             block_containers: The BlocksContainer to enhance in-place
         """
         from app.utils.indexing_helpers import (
-            get_rows_text,
             get_table_summary_n_headers,
+            set_table_row_text,
         )
 
         # Find all TABLE BlockGroups
@@ -741,96 +741,10 @@ class Processor:
 
                     self.logger.debug(f"Enhanced table {table_group.index} with summary: {table_summary[:100]}...")
 
-                    # Get all child row blocks for this table
-                    row_blocks = []
-                    row_dicts = []
-
-                    if table_group.children:
-                        # Handle new BlockGroupChildren format (range-based)
-                        if isinstance(table_group.children, BlockGroupChildren):
-                            # Iterate over block ranges and expand to individual indices
-                            for range_obj in table_group.children.block_ranges:
-                                for block_index in range(range_obj.start, range_obj.end + 1):
-                                    if 0 <= block_index < len(block_containers.blocks):
-                                        block = block_containers.blocks[block_index]
-                                        if block.type == BlockType.TABLE_ROW:
-                                            row_blocks.append(block)
-                                            # Extract row dict from block data
-                                            if block.data and "cells" in block.data:
-                                                # Create row dict mapping column headers to cell values
-                                                cells = block.data["cells"]
-                                                if isinstance(cells, list) and column_headers:
-                                                    row_dict = {
-                                                        col: cells[i] if i < len(cells) else ""
-                                                        for i, col in enumerate(column_headers)
-                                                    }
-                                                    row_dicts.append(row_dict)
-                                                else:
-                                                    row_dicts.append({})
-                        # Handle old format (list of BlockContainerIndex) for backward compatibility
-                        elif isinstance(table_group.children, list):
-                            for child_idx in table_group.children:
-                                if isinstance(child_idx, BlockContainerIndex) and child_idx.block_index is not None:
-                                    block_index = child_idx.block_index
-                                    if 0 <= block_index < len(block_containers.blocks):
-                                        block = block_containers.blocks[block_index]
-                                        if block.type == BlockType.TABLE_ROW:
-                                            row_blocks.append(block)
-                                            # Extract row dict from block data
-                                            if block.data and "cells" in block.data:
-                                                # Create row dict mapping column headers to cell values
-                                                cells = block.data["cells"]
-                                                if isinstance(cells, list) and column_headers:
-                                                    row_dict = {
-                                                        col: cells[i] if i < len(cells) else ""
-                                                        for i, col in enumerate(column_headers)
-                                                    }
-                                                    row_dicts.append(row_dict)
-                                                else:
-                                                    row_dicts.append({})
-
-                    # Generate LLM row descriptions (skip header rows)
-                    # Filter out header rows using is_header flag from table_row_metadata
-                    non_header_row_dicts = []
-                    non_header_row_indices = []  # Track original indices for updating blocks
-
-                    for i, (row_dict, row_block) in enumerate(zip(row_dicts, row_blocks)):
-                        # Check if this row is a header using the is_header flag from table_row_metadata
-                        is_header = (
-                            row_block
-                            and row_block.table_row_metadata
-                            and row_block.table_row_metadata.is_header
-                        )
-
-                        if not is_header:
-                            non_header_row_dicts.append(row_dict)
-                            non_header_row_indices.append(i)
-
-                    if non_header_row_dicts:
-                        try:
-                            # get_rows_text skips row 0 when column_headers is provided
-                            cols = column_headers or []
-                            grid = []
-                            if cols:
-                                grid.append([{"text": col} for col in cols])
-                            for row_dict in non_header_row_dicts:
-                                grid_row = [{"text": row_dict.get(col, "")} for col in cols]
-                                grid.append(grid_row)
-                            table_data = {"grid": grid}
-                            row_descriptions, _ = await get_rows_text(
-                                self.config_service, table_data, table_summary, column_headers
-                            )
-
-                            # Update row blocks with LLM descriptions (only non-header rows)
-                            for description_idx, original_idx in enumerate(non_header_row_indices):
-                                if description_idx < len(row_descriptions) and original_idx < len(row_blocks):
-                                    row_block = row_blocks[original_idx]
-                                    if row_block.data:
-                                        row_block.data["row_natural_language_text"] = row_descriptions[description_idx]
-
-                            self.logger.debug(f"Enhanced {len(row_descriptions)} rows with LLM descriptions")
-                        except Exception as e:
-                            self.logger.warning(f"Failed to generate row descriptions: {e}")
+                    row_count = set_table_row_text(
+                        block_containers.blocks, table_group, column_headers
+                    )
+                    self.logger.debug(f"Generated row text for {row_count} rows")
                 else:
                     self.logger.warning(f"No LLM response for table {table_group.index}")
 
@@ -883,7 +797,7 @@ class Processor:
             # Signal parsing complete after blocks are processed
             yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
-            # Enhance TABLE BlockGroups with LLM summaries and row descriptions
+            # Enhance TABLE BlockGroups with LLM summaries and per-row text
             await self._enhance_tables_with_llm(block_containers)
 
             # Get record from database

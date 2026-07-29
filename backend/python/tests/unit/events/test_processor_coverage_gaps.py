@@ -527,10 +527,6 @@ class TestEnhanceTablesCoverageGaps:
             "app.utils.indexing_helpers.get_table_summary_n_headers",
             new_callable=AsyncMock,
             side_effect=_summary,
-        ), patch(
-            "app.utils.indexing_helpers.get_rows_text",
-            new_callable=AsyncMock,
-            return_value=([], []),
         ):
             await proc._enhance_tables_with_llm(container)
 
@@ -585,20 +581,15 @@ class TestEnhanceTablesCoverageGaps:
             "app.utils.indexing_helpers.get_table_summary_n_headers",
             new_callable=AsyncMock,
             return_value=response,
-        ), patch(
-            "app.utils.indexing_helpers.get_rows_text",
-            new_callable=AsyncMock,
-            return_value=(["only one desc"], []),
-        ) as mock_rows:
+        ):
             await proc._enhance_tables_with_llm(container)
 
-        mock_rows.assert_awaited_once()
-        # Header skipped; sole description maps to first non-header row_blocks entry
-        # (index 2 — non-list cells), later non-header rows get nothing.
+        # Header row and the non-list-cells row are skipped; every other data row
+        # gets its own text, none of them shifted onto a neighbouring row.
         assert blocks[1].data.get("row_natural_language_text") is None
-        assert blocks[2].data.get("row_natural_language_text") == "only one desc"
-        assert blocks[3].data.get("row_natural_language_text") is None
-        assert blocks[4].data.get("row_natural_language_text") is None
+        assert blocks[2].data.get("row_natural_language_text") is None
+        assert blocks[3].data.get("row_natural_language_text") == "A: v"
+        assert blocks[4].data.get("row_natural_language_text") == "A: w"
 
     @pytest.mark.asyncio
     async def test_blockgroup_row_without_cells_skipped_for_row_dicts(self):
@@ -623,23 +614,19 @@ class TestEnhanceTablesCoverageGaps:
             "app.utils.indexing_helpers.get_table_summary_n_headers",
             new_callable=AsyncMock,
             return_value=response,
-        ), patch(
-            "app.utils.indexing_helpers.get_rows_text",
-            new_callable=AsyncMock,
-        ) as mock_rows:
+        ):
             await proc._enhance_tables_with_llm(container)
 
-        mock_rows.assert_not_awaited()
         assert "row_natural_language_text" not in row_no_cells.data
 
     @pytest.mark.asyncio
-    async def test_blockgroup_falsy_data_skips_description_write(self):
-        """Cover falsy row_block.data write skip (820)."""
+    async def test_blockgroup_falsy_data_skips_row_text_write(self):
+        """A row block with no data dict is skipped instead of raising."""
         proc = _make_processor()
-        row_cleared = MagicMock()
-        row_cleared.type = BlockType.TABLE_ROW
-        row_cleared.table_row_metadata = None
-        row_cleared.data = {"cells": ["z"]}
+        row_no_data = MagicMock()
+        row_no_data.type = BlockType.TABLE_ROW
+        row_no_data.table_row_metadata = None
+        row_no_data.data = None
 
         bg = MagicMock()
         bg.type = GroupType.TABLE
@@ -651,25 +638,17 @@ class TestEnhanceTablesCoverageGaps:
 
         container = MagicMock()
         container.block_groups = [bg]
-        container.blocks = [row_cleared]
+        container.blocks = [row_no_data]
         response = MagicMock(summary="s", headers=["A"])
-
-        async def _rows(*_a, **_k):
-            row_cleared.data = None
-            return (["d1"], [])
 
         with patch(
             "app.utils.indexing_helpers.get_table_summary_n_headers",
             new_callable=AsyncMock,
             return_value=response,
-        ), patch(
-            "app.utils.indexing_helpers.get_rows_text",
-            new_callable=AsyncMock,
-            side_effect=_rows,
         ):
             await proc._enhance_tables_with_llm(container)
 
-        assert row_cleared.data is None
+        assert row_no_data.data is None
 
     @pytest.mark.asyncio
     async def test_legacy_list_children_edge_filters(self):
@@ -713,10 +692,6 @@ class TestEnhanceTablesCoverageGaps:
             "app.utils.indexing_helpers.get_table_summary_n_headers",
             new_callable=AsyncMock,
             return_value=response,
-        ), patch(
-            "app.utils.indexing_helpers.get_rows_text",
-            new_callable=AsyncMock,
-            return_value=([], []),
         ):
             await proc._enhance_tables_with_llm(container)
 

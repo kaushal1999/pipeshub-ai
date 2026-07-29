@@ -36,7 +36,6 @@ from app.modules.parsers.pdf.opencv_layout_analyzer import (
     extract_layout_regions,
 )
 from app.utils.indexing_helpers import (
-    generate_simple_row_text,
     get_rows_text,
     get_table_summary_n_headers,
 )
@@ -236,34 +235,18 @@ class PDFPlumberOpenCVProcessor:
         if skip_llm_enrichment:
             table_summary = ""
             column_headers: List[str] = []
-            # Derive headers from the first row if it looks like a header row
-            first_row = grid[0] if grid else []
-            raw_headers = [
+            # Without LLM headers, the first row still labels the cells of the rows below it
+            row_labels = [
                 (cell.get("text", "") if isinstance(cell, dict) else str(cell or ""))
-                for cell in first_row
+                for cell in grid[0]
             ]
-            data_rows = grid[1:] if grid else []
-            table_rows_text = []
-            for row in data_rows:
-                row_dict = {
-                    (raw_headers[i] if i < len(raw_headers) else f"Column_{i + 1}"): (
-                        cell.get("text", "") if isinstance(cell, dict) else str(cell or "")
-                    )
-                    for i, cell in enumerate(row)
-                }
-                table_rows_text.append(generate_simple_row_text(row_dict))
-            table_rows = data_rows
         else:
             response = await get_table_summary_n_headers(self.config, grid)
             table_summary = response.summary if response else ""
             column_headers = response.headers if response else []
+            row_labels = column_headers
 
-            table_rows_text, table_rows = await get_rows_text(
-                self.config,
-                {"grid": grid},
-                table_summary,
-                column_headers,
-            )
+        table_rows_text, table_rows = get_rows_text({"grid": grid}, row_labels)
 
         num_rows = len(grid)
         num_cols = len(grid[0]) if grid else 0

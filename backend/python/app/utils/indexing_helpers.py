@@ -1,11 +1,18 @@
 import base64
 import json
+from collections.abc import Iterator
 from typing import Any, Dict, List, Optional, Tuple
 
 from jinja2 import Template
 from pydantic import BaseModel, Field
 
-from app.modules.parsers.excel.prompt_template import RowDescriptions, row_text_prompt
+from app.models.blocks import (
+    Block,
+    BlockContainerIndex,
+    BlockGroup,
+    BlockGroupChildren,
+    BlockType,
+)
 from app.utils.llm import get_llm_for_role
 from app.utils.streaming import invoke_with_structured_output_and_reflection
 
@@ -108,51 +115,94 @@ async def get_table_summary_n_headers(config, table_data) -> Optional[TableSumma
         raise e
 
 
-async def get_rows_text(
-    config, table_data: dict, table_summary: str, column_headers: list[str]
+def get_rows_text(
+    table_data: dict, column_headers: list[str]
 ) -> Tuple[List[str], List[List[dict]]]:
-    """Convert multiple rows into natural language text using context from summaries in a single prompt"""
+    """Build a ``column: value`` text for every table row, without an LLM call.
+
+    The first grid row is skipped when column_headers are supplied, since it is
+    the header row and its values already label every cell.
+    """
     table = table_data.get("grid")
-    if table:
-        try:
-            # Skip first row if column_headers provided (first row is header)
-            if column_headers:
-                table_rows = table[1:]
-            else:
-                table_rows = table
-
-            rows_data = [
-                {
-                    column_headers[i] if column_headers and i<len(column_headers) else f"Column_{i+1}": (
-                        cell.get("text", "") if isinstance(cell, dict) else cell
-                    )
-                    for i, cell in enumerate(row)
-                }
-                for row in table_rows
-            ]
-
-            # Get natural language text from LLM with retry
-            messages = row_text_prompt.format_messages(
-                table_summary=table_summary, rows_data=json.dumps(rows_data, indent=2, ensure_ascii=False)
-            )
-            llm, _ = await get_llm_for_role(config, "indexing")
-
-            # Default to string representations of rows
-            descriptions = [str(row) for row in rows_data]
-
-            # Use centralized utility with reflection
-            parsed_response = await invoke_with_structured_output_and_reflection(
-                llm, messages, RowDescriptions
-            )
-
-            if parsed_response is not None and parsed_response.descriptions:
-                descriptions = parsed_response.descriptions
-
-            return descriptions, table_rows
-        except Exception:
-            raise
-    else:
+    if not table:
         return [], []
+
+    table_rows = table[1:] if column_headers else table
+
+    descriptions = [
+        generate_simple_row_text(
+            {
+                column_headers[i] if i < len(column_headers) else f"Column_{i+1}": (
+                    cell.get("text", "") if isinstance(cell, dict) else cell
+                )
+                for i, cell in enumerate(row)
+            }
+        )
+        for row in table_rows
+    ]
+
+    return descriptions, table_rows
+
+
+def _iter_child_blocks(blocks: list[Block], table_group: BlockGroup) -> Iterator[Block]:
+    """Yield the blocks referenced by a BlockGroup's children, skipping out-of-range indices."""
+    children = table_group.children
+    if isinstance(children, BlockGroupChildren):
+        indices: Iterator[int] = (
+            index
+            for block_range in children.block_ranges
+            for index in range(block_range.start, block_range.end + 1)
+        )
+    # Old format: list of BlockContainerIndex, kept for backward compatibility
+    elif isinstance(children, list):
+        indices = (
+            child.block_index
+            for child in children
+            if isinstance(child, BlockContainerIndex) and child.block_index is not None
+        )
+    else:
+        return
+
+    for index in indices:
+        if 0 <= index < len(blocks):
+            yield blocks[index]
+
+
+def set_table_row_text(
+    blocks: list[Block], table_group: BlockGroup, column_headers: list[str]
+) -> int:
+    """Write ``column: value`` text onto the data-row blocks of a table group.
+
+    Header rows are skipped — they label the values rather than carry them — as
+    are rows whose cells cannot be paired with a column, so that row text
+    already set by an upstream parser is left untouched.
+
+    Returns the number of rows written.
+    """
+    if not column_headers:
+        return 0
+
+    written = 0
+    for block in _iter_child_blocks(blocks, table_group):
+        if block.type != BlockType.TABLE_ROW:
+            continue
+        if block.table_row_metadata and block.table_row_metadata.is_header:
+            continue
+        if not isinstance(block.data, dict):
+            continue
+
+        cells = block.data.get("cells")
+        if not isinstance(cells, list):
+            continue
+
+        row_values = {
+            col: cells[i] if i < len(cells) else ""
+            for i, col in enumerate(column_headers)
+        }
+        block.data["row_natural_language_text"] = generate_simple_row_text(row_values)
+        written += 1
+
+    return written
 
 
 def generate_simple_row_text(row_data: Dict[str, Any]) -> str:

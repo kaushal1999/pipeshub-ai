@@ -5,8 +5,7 @@ Targets remaining uncovered lines:
 - 434-436, 450-452, 457-475: process_pdf_document_with_ocr VLM OCR page parsing/blocks errors, chunk processing
 - 534-536, 561: process_pdf_document_with_ocr bounding_box errors, block_group.children = None
 - 709, 715: _enhance_tables_with_llm: table_group.data is None, table_metadata column update
-- 744-765: _enhance_tables_with_llm: old-format children (list of BlockContainerIndex), row_dicts empty dict
-- 799-800: _enhance_tables_with_llm: get_rows_text exception
+- _enhance_tables_with_llm: old-format children (list of BlockContainerIndex)
 - 1148, 1152-1160: _build_updated_blocks_container parent_index shift, children block_group_ranges shift
 - 1195, 1215: _build_updated_blocks_container new_block.parent_index offset, new_bg.parent_index offset
 - 1221-1228: _build_updated_blocks_container new_bg.children block/block_group ranges shift
@@ -439,12 +438,10 @@ class TestEnhanceTablesOldFormatChildren:
             "app.utils.indexing_helpers.get_table_summary_n_headers",
             new_callable=AsyncMock,
             return_value=mock_response,
-        ), patch(
-            "app.utils.indexing_helpers.get_rows_text",
-            new_callable=AsyncMock,
-            return_value=(["Row 1 description"], None),
         ):
             await proc._enhance_tables_with_llm(bc)
+
+        assert "row_natural_language_text" not in row_block.data
 
     @pytest.mark.asyncio
     async def test_old_format_with_list_cells(self):
@@ -488,71 +485,13 @@ class TestEnhanceTablesOldFormatChildren:
             "app.utils.indexing_helpers.get_table_summary_n_headers",
             new_callable=AsyncMock,
             return_value=mock_response,
-        ), patch(
-            "app.utils.indexing_helpers.get_rows_text",
-            new_callable=AsyncMock,
-            return_value=(["Row desc"], None),
         ):
             await proc._enhance_tables_with_llm(bc)
 
-
-# ===================================================================
-# Lines 799-800: _enhance_tables_with_llm - get_rows_text raises exception
-# ===================================================================
-
-
-class TestEnhanceTablesRowDescriptionException:
-    @pytest.mark.asyncio
-    async def test_get_rows_text_exception_caught(self):
-        """Exception from get_rows_text is caught and logged as warning."""
-        from app.models.blocks import (
-            Block,
-            BlockGroup,
-            BlockGroupChildren,
-            BlocksContainer,
-            BlockType,
-            DataFormat,
-            GroupType,
-            IndexRange,
-            TableRowMetadata,
+        assert (
+            row_block.data["row_natural_language_text"]
+            == "col_a: val_a, col_b: val_b"
         )
-
-        proc = _make_processor()
-
-        row_block = Block(
-            index=0,
-            type=BlockType.TABLE_ROW,
-            format=DataFormat.TXT,
-            data={"cells": ["v1", "v2"]},
-            table_row_metadata=TableRowMetadata(is_header=False),
-        )
-
-        bg = BlockGroup(
-            index=0,
-            type=GroupType.TABLE,
-            data={"table_markdown": "| a | b |\n| 1 | 2 |"},
-            children=BlockGroupChildren(
-                block_ranges=[IndexRange(start=0, end=0)],
-                block_group_ranges=[],
-            ),
-        )
-        bc = BlocksContainer(blocks=[row_block], block_groups=[bg])
-
-        mock_response = MagicMock()
-        mock_response.summary = "Summary"
-        mock_response.headers = ["col_a", "col_b"]
-
-        with patch(
-            "app.utils.indexing_helpers.get_table_summary_n_headers",
-            new_callable=AsyncMock,
-            return_value=mock_response,
-        ), patch(
-            "app.utils.indexing_helpers.get_rows_text",
-            new_callable=AsyncMock,
-            side_effect=RuntimeError("LLM failed"),
-        ):
-            # Should not raise -- exception is caught and logged
-            await proc._enhance_tables_with_llm(bc)
 
 
 # ===================================================================
@@ -1326,10 +1265,10 @@ class TestEnhanceTablesEmptyCellsDict:
             new_callable=AsyncMock,
             return_value=mock_response,
         ):
-            # No get_rows_text needed because non_header_row_dicts will be [{...}]
-            # Actually with empty headers, the condition `isinstance(cells, list) and column_headers`
-            # evaluates to False (empty list is falsy), so row_dicts.append({}) is reached
             await proc._enhance_tables_with_llm(bc)
+
+        # Without column headers there is nothing to label the cells with
+        assert "row_natural_language_text" not in row_block.data
 
 
 # ===================================================================
@@ -1699,13 +1638,9 @@ class TestProcessorCoverageBranchesTo95:
             "app.utils.indexing_helpers.get_table_summary_n_headers",
             new_callable=AsyncMock,
             return_value=mock_response,
-        ), patch(
-            "app.utils.indexing_helpers.get_rows_text",
-            new_callable=AsyncMock,
-            return_value=(["desc"], []),
         ):
             await proc._enhance_tables_with_llm(bc)
 
-        assert row_block.data.get("row_natural_language_text") == "desc"
+        assert row_block.data.get("row_natural_language_text") == "c: v"
 
 

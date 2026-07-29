@@ -760,7 +760,7 @@ class TestPyMuPDFOpenCVProcessorExtended:
         with patch("app.modules.parsers.pdf.pdfplumber_opencv_processor.get_table_summary_n_headers",
                     new_callable=AsyncMock, return_value=mock_response), \
              patch("app.modules.parsers.pdf.pdfplumber_opencv_processor.get_rows_text",
-                    new_callable=AsyncMock, return_value=(["Row text"], [["A", "B"]])):
+                    return_value=(["Row text"], [["A", "B"]])):
             result = await proc.create_blocks([pd])
 
         # TABLE row, IMAGE, 4 list items (2 groups), 1 TEXT
@@ -901,22 +901,19 @@ class TestPyMuPDFOpenCVProcessorExtended:
         with patch(
             "app.modules.parsers.pdf.pdfplumber_opencv_processor.get_table_summary_n_headers",
             new_callable=AsyncMock,
-        ) as mock_summary, patch(
-            "app.modules.parsers.pdf.pdfplumber_opencv_processor.get_rows_text",
-            new_callable=AsyncMock,
-        ) as mock_rows:
+        ) as mock_summary:
             bg = await proc._build_table_group(
                 region, pd, blocks, block_groups, skip_llm_enrichment=True
             )
 
         mock_summary.assert_not_called()
-        mock_rows.assert_not_called()
         assert bg is not None
         assert bg.type.value == "table"
         assert len(blocks) == 2
         assert blocks[0].data["row_number"] == 1
-        assert "Name:" in blocks[0].data["row_natural_language_text"]
+        assert blocks[0].data["row_natural_language_text"] == "Name: Alice, Age: 30"
         assert blocks[1].data["row_number"] == 2
+        assert blocks[1].data["row_natural_language_text"] == "Name: Bob, Age: null"
 
     @pytest.mark.asyncio
     async def test_build_table_group_empty_grid(self):
@@ -992,7 +989,6 @@ class TestPyMuPDFOpenCVProcessorExtended:
             return_value=mock_response,
         ), patch(
             "app.modules.parsers.pdf.pdfplumber_opencv_processor.get_rows_text",
-            new_callable=AsyncMock,
             return_value=(["Only one row text"], [["1", "2"], ["3", "4"]]),
         ):
             bg = await proc._build_table_group(region, pd, blocks, block_groups)

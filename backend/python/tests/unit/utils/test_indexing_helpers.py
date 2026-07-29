@@ -3,7 +3,8 @@ Tests for app.utils.indexing_helpers:
   - format_rows_with_index — numbered JSON rows
   - generate_simple_row_text — column: value formatting
   - get_table_summary_n_headers — LLM table summary (mocked)
-  - get_rows_text — row descriptions via structured LLM (mocked)
+  - get_rows_text — column: value row text built from the table grid
+  - set_table_row_text — row text written onto a table group's row blocks
   - image_bytes_to_base64 — data URI encoding
 """
 
@@ -13,12 +14,23 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.models.blocks import (
+    Block,
+    BlockContainerIndex,
+    BlockGroup,
+    BlockGroupChildren,
+    BlockType,
+    DataFormat,
+    GroupType,
+    TableRowMetadata,
+)
 from app.utils.indexing_helpers import (
     format_rows_with_index,
     generate_simple_row_text,
     get_rows_text,
     get_table_summary_n_headers,
     image_bytes_to_base64,
+    set_table_row_text,
     TableSummary,
 )
 
@@ -380,20 +392,9 @@ class TestImageBytesToBase64:
 
 
 class TestGetRowsText:
-    """get_rows_text: grid parsing, header handling, and LLM row descriptions."""
+    """get_rows_text: grid parsing, header handling, and column: value row text."""
 
-    @pytest.mark.asyncio
-    @patch("app.utils.indexing_helpers.invoke_with_structured_output_and_reflection")
-    @patch("app.utils.indexing_helpers.get_llm_for_role", new_callable=AsyncMock)
-    async def test_with_column_headers_and_parsed_response(
-        self, mock_get_llm, mock_invoke
-    ):
-        mock_get_llm.return_value = (MagicMock(), None)
-
-        parsed = MagicMock()
-        parsed.descriptions = ["Row 1 is about X", "Row 2 is about Y"]
-        mock_invoke.return_value = parsed
-
+    def test_with_column_headers_skips_header_row(self):
         table_data = {
             "grid": [
                 ["Name", "Age"],
@@ -402,20 +403,11 @@ class TestGetRowsText:
             ]
         }
 
-        descriptions, rows = await get_rows_text(
-            MagicMock(), table_data, "People table", ["Name", "Age"]
-        )
-        assert len(descriptions) == 2
-        assert descriptions[0] == "Row 1 is about X"
-        assert len(rows) == 2
+        descriptions, rows = get_rows_text(table_data, ["Name", "Age"])
+        assert descriptions == ["Name: Alice, Age: 30", "Name: Bob, Age: 25"]
+        assert rows == [["Alice", "30"], ["Bob", "25"]]
 
-    @pytest.mark.asyncio
-    @patch("app.utils.indexing_helpers.invoke_with_structured_output_and_reflection")
-    @patch("app.utils.indexing_helpers.get_llm_for_role", new_callable=AsyncMock)
-    async def test_without_column_headers(self, mock_get_llm, mock_invoke):
-        mock_get_llm.return_value = (MagicMock(), None)
-        mock_invoke.return_value = None
-
+    def test_without_column_headers_keeps_all_rows(self):
         table_data = {
             "grid": [
                 ["Alice", "30"],
@@ -423,20 +415,11 @@ class TestGetRowsText:
             ]
         }
 
-        descriptions, rows = await get_rows_text(
-            MagicMock(), table_data, "People table", []
-        )
-        assert len(descriptions) == 2
+        descriptions, rows = get_rows_text(table_data, [])
         assert len(rows) == 2
-        assert "Alice" in descriptions[0]
+        assert descriptions[0] == "Column_1: Alice, Column_2: 30"
 
-    @pytest.mark.asyncio
-    @patch("app.utils.indexing_helpers.invoke_with_structured_output_and_reflection")
-    @patch("app.utils.indexing_helpers.get_llm_for_role", new_callable=AsyncMock)
-    async def test_with_dict_cells(self, mock_get_llm, mock_invoke):
-        mock_get_llm.return_value = (MagicMock(), None)
-        mock_invoke.return_value = None
-
+    def test_with_dict_cells(self):
         table_data = {
             "grid": [
                 ["Name", "Age"],
@@ -444,61 +427,21 @@ class TestGetRowsText:
             ]
         }
 
-        descriptions, rows = await get_rows_text(
-            MagicMock(), table_data, "People table", ["Name", "Age"]
-        )
+        descriptions, rows = get_rows_text(table_data, ["Name", "Age"])
         assert len(rows) == 1
-        assert "Alice" in descriptions[0]
+        assert descriptions[0] == "Name: Alice, Age: 30"
 
-    @pytest.mark.asyncio
-    async def test_empty_grid(self):
-        descriptions, rows = await get_rows_text(
-            MagicMock(), {}, "summary", []
-        )
+    def test_empty_grid(self):
+        descriptions, rows = get_rows_text({}, [])
         assert descriptions == []
         assert rows == []
 
-    @pytest.mark.asyncio
-    async def test_empty_grid_when_grid_is_none(self):
-        descriptions, rows = await get_rows_text(
-            MagicMock(), {"grid": None}, "Empty", []
-        )
+    def test_empty_grid_when_grid_is_none(self):
+        descriptions, rows = get_rows_text({"grid": None}, [])
         assert descriptions == []
         assert rows == []
 
-    @pytest.mark.asyncio
-    @patch("app.utils.indexing_helpers.invoke_with_structured_output_and_reflection")
-    @patch("app.utils.indexing_helpers.get_llm_for_role", new_callable=AsyncMock)
-    async def test_parsed_response_empty_descriptions(self, mock_get_llm, mock_invoke):
-        mock_get_llm.return_value = (MagicMock(), None)
-        parsed = MagicMock()
-        parsed.descriptions = []
-        mock_invoke.return_value = parsed
-
-        table_data = {"grid": [["A"], ["B"]]}
-
-        descriptions, rows = await get_rows_text(
-            MagicMock(), table_data, "summary", []
-        )
-        assert len(descriptions) == 2
-
-    @pytest.mark.asyncio
-    @patch("app.utils.indexing_helpers.get_llm_for_role", new_callable=AsyncMock)
-    async def test_exception_propagates_get_rows_text(self, mock_get_llm):
-        mock_get_llm.side_effect = Exception("LLM error")
-
-        table_data = {"grid": [["A"], ["B"]]}
-
-        with pytest.raises(Exception, match="LLM error"):
-            await get_rows_text(MagicMock(), table_data, "summary", ["Col"])
-
-    @pytest.mark.asyncio
-    @patch("app.utils.indexing_helpers.invoke_with_structured_output_and_reflection")
-    @patch("app.utils.indexing_helpers.get_llm_for_role", new_callable=AsyncMock)
-    async def test_more_columns_than_headers(self, mock_get_llm, mock_invoke):
-        mock_get_llm.return_value = (MagicMock(), None)
-        mock_invoke.return_value = None
-
+    def test_more_columns_than_headers(self):
         table_data = {
             "grid": [
                 ["Name", "Age", "Extra"],
@@ -506,8 +449,102 @@ class TestGetRowsText:
             ]
         }
 
-        descriptions, rows = await get_rows_text(
-            MagicMock(), table_data, "summary", ["Name"]
-        )
+        descriptions, rows = get_rows_text(table_data, ["Name"])
         assert len(rows) == 1
-        assert "Column_2" in descriptions[0] or "Column_3" in descriptions[0]
+        assert descriptions[0] == "Name: Alice, Column_2: 30, Column_3: abc"
+
+
+# ===========================================================================
+# set_table_row_text
+# ===========================================================================
+
+
+def _table_row(index: int, cells, is_header: bool = False) -> Block:
+    return Block(
+        index=index,
+        type=BlockType.TABLE_ROW,
+        format=DataFormat.JSON,
+        data={"cells": cells},
+        table_row_metadata=TableRowMetadata(is_header=is_header),
+    )
+
+
+def _table_group(children) -> BlockGroup:
+    return BlockGroup.model_construct(
+        index=0, type=GroupType.TABLE, data={}, children=children
+    )
+
+
+class TestSetTableRowText:
+    """set_table_row_text: header filtering, alignment, and child-format handling."""
+
+    def test_writes_text_per_data_row(self):
+        blocks = [
+            _table_row(0, ["Name", "Age"], is_header=True),
+            _table_row(1, ["Alice", "30"]),
+            _table_row(2, ["Bob", "25"]),
+        ]
+        group = _table_group(BlockGroupChildren.from_indices(block_indices=[0, 1, 2]))
+
+        written = set_table_row_text(blocks, group, ["Name", "Age"])
+
+        assert written == 2
+        assert "row_natural_language_text" not in blocks[0].data
+        assert blocks[1].data["row_natural_language_text"] == "Name: Alice, Age: 30"
+        assert blocks[2].data["row_natural_language_text"] == "Name: Bob, Age: 25"
+
+    def test_row_without_usable_cells_does_not_shift_later_rows(self):
+        """A skipped row must not push its text onto the next row."""
+        no_cells = Block(
+            index=0,
+            type=BlockType.TABLE_ROW,
+            format=DataFormat.JSON,
+            data={"other": True},
+        )
+        blocks = [no_cells, _table_row(1, ["Alice"]), _table_row(2, ["Bob"])]
+        group = _table_group(BlockGroupChildren.from_indices(block_indices=[0, 1, 2]))
+
+        written = set_table_row_text(blocks, group, ["Name"])
+
+        assert written == 2
+        assert "row_natural_language_text" not in no_cells.data
+        assert blocks[1].data["row_natural_language_text"] == "Name: Alice"
+        assert blocks[2].data["row_natural_language_text"] == "Name: Bob"
+
+    def test_no_headers_leaves_existing_text_untouched(self):
+        row = _table_row(0, ["Alice"])
+        row.data["row_natural_language_text"] = "set by upstream parser"
+        group = _table_group(BlockGroupChildren.from_indices(block_indices=[0]))
+
+        assert set_table_row_text([row], group, []) == 0
+        assert row.data["row_natural_language_text"] == "set by upstream parser"
+
+    def test_fewer_cells_than_headers_pads_with_empty(self):
+        row = _table_row(0, ["Alice"])
+        group = _table_group(BlockGroupChildren.from_indices(block_indices=[0]))
+
+        set_table_row_text([row], group, ["Name", "Age"])
+
+        assert row.data["row_natural_language_text"] == "Name: Alice, Age: "
+
+    def test_legacy_children_list_and_out_of_range_indices(self):
+        row = _table_row(0, ["Alice"])
+        group = _table_group(
+            [
+                BlockContainerIndex(block_index=0),
+                BlockContainerIndex(block_index=None),
+                BlockContainerIndex(block_index=99),
+                "not-an-index",
+            ]
+        )
+
+        assert set_table_row_text([row], group, ["Name"]) == 1
+        assert row.data["row_natural_language_text"] == "Name: Alice"
+
+    def test_non_table_row_blocks_ignored(self):
+        text_block = Block(
+            index=0, type=BlockType.TEXT, format=DataFormat.TXT, data="hello"
+        )
+        group = _table_group(BlockGroupChildren.from_indices(block_indices=[0]))
+
+        assert set_table_row_text([text_block], group, ["Name"]) == 0

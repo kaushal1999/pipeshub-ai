@@ -2375,12 +2375,11 @@ class TestEnhanceTablesWithLlm:
 
         with patch("app.utils.indexing_helpers.get_table_summary_n_headers", new_callable=AsyncMock) as mock_summary:
             mock_summary.return_value = mock_response
-            with patch("app.utils.indexing_helpers.get_rows_text", new_callable=AsyncMock) as mock_rows:
-                mock_rows.return_value = (["Row 1: val1 is in Col_A, val2 is in Col_B"], [])
-                await proc._enhance_tables_with_llm(container)
+            await proc._enhance_tables_with_llm(container)
 
         assert bg.description == "This is a test table"
         assert bg.data["table_summary"] == "This is a test table"
+        assert row_block.data["row_natural_language_text"] == "Col_A: val1, Col_B: val2"
 
     @pytest.mark.asyncio
     async def test_table_group_exception_continues(self):

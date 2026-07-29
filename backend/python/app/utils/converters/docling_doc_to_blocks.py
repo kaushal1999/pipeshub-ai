@@ -273,7 +273,7 @@ class DoclingDocToBlocksConverter():
             table_summary = response.summary if response else ""
             column_headers = response.headers if response else []
 
-            table_rows_text,table_rows = await get_rows_text(self.config, table_data, table_summary, column_headers)
+            table_rows_text,table_rows = get_rows_text(table_data, column_headers)
 
             # Convert caption and footnote references to text strings
             _captions = item.get("captions", [])

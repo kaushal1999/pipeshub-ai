@@ -619,7 +619,7 @@ class TestPyMuPDFOpenCVProcessor:
         with patch("app.modules.parsers.pdf.pdfplumber_opencv_processor.get_table_summary_n_headers",
                     new_callable=AsyncMock, return_value=mock_response), \
              patch("app.modules.parsers.pdf.pdfplumber_opencv_processor.get_rows_text",
-                    new_callable=AsyncMock, return_value=(["Row 1 text"], [["1", "2"]])):
+                    return_value=(["Row 1 text"], [["1", "2"]])):
             bg = await proc._build_table_group(region, pd, blocks, block_groups)
 
         assert bg is not None

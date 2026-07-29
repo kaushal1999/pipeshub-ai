@@ -307,7 +307,7 @@ class TestTableBlockWithChildren:
         mock_summary_response.headers = ["A"]
 
         mock_get_summary = AsyncMock(return_value=mock_summary_response)
-        mock_get_rows = AsyncMock(return_value=(["Row text"], [{"row": 1}]))
+        mock_get_rows = MagicMock(return_value=(["Row text"], [{"row": 1}]))
 
         with patch(
             "app.utils.converters.docling_doc_to_blocks.get_table_summary_n_headers",

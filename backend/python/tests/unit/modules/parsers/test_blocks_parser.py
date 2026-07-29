@@ -684,7 +684,7 @@ class TestEnhanceTablesWithLlm:
         assert bg.data == {"table_summary": "s", "column_headers": ["A"]}
 
     @pytest.mark.asyncio
-    async def test_empty_headers_still_builds_grid_for_rows(self):
+    async def test_empty_headers_skip_row_text(self):
         parser = _make_parser()
         row = Block(
             index=0,
@@ -700,21 +700,16 @@ class TestEnhanceTablesWithLlm:
         bg.children = BlockGroupChildren.from_indices(block_indices=[0])
         container = BlocksContainer(blocks=[row], block_groups=[bg])
 
-        # headers empty list -> cols = [], grid has no header row
         mock_response = MagicMock(summary="s", headers=[])
         with patch(
             "app.utils.indexing_helpers.get_table_summary_n_headers",
             new_callable=AsyncMock,
             return_value=mock_response,
-        ), patch(
-            "app.utils.indexing_helpers.get_rows_text",
-            new_callable=AsyncMock,
-            return_value=(["desc"], []),
-        ) as mock_rows:
+        ):
             await parser._enhance_tables_with_llm(container)
 
-        mock_rows.assert_awaited_once()
-        assert row.data["row_natural_language_text"] == "desc"
+        # No headers means nothing to label the cells with
+        assert "row_natural_language_text" not in row.data
 
     @pytest.mark.asyncio
     async def test_enhancement_with_block_group_children(self):
@@ -750,10 +745,6 @@ class TestEnhanceTablesWithLlm:
             "app.utils.indexing_helpers.get_table_summary_n_headers",
             new_callable=AsyncMock,
             return_value=mock_response,
-        ), patch(
-            "app.utils.indexing_helpers.get_rows_text",
-            new_callable=AsyncMock,
-            return_value=(["row desc"], []),
         ):
             await parser._enhance_tables_with_llm(container)
 
@@ -761,7 +752,7 @@ class TestEnhanceTablesWithLlm:
         assert bg.data["table_summary"] == "summary"
         assert bg.data["column_headers"] == ["Col_A", "Col_B"]
         assert bg.table_metadata.column_names == ["Col_A", "Col_B"]
-        assert row.data["row_natural_language_text"] == "row desc"
+        assert row.data["row_natural_language_text"] == "Col_A: v1, Col_B: v2"
         assert "row_natural_language_text" not in header.data
 
     @pytest.mark.asyncio
@@ -795,14 +786,10 @@ class TestEnhanceTablesWithLlm:
             "app.utils.indexing_helpers.get_table_summary_n_headers",
             new_callable=AsyncMock,
             return_value=mock_response,
-        ), patch(
-            "app.utils.indexing_helpers.get_rows_text",
-            new_callable=AsyncMock,
-            return_value=(["desc"], []),
         ):
             await parser._enhance_tables_with_llm(container)
 
-        assert row.data["row_natural_language_text"] == "desc"
+        assert row.data["row_natural_language_text"] == "A: only"
 
     @pytest.mark.asyncio
     async def test_legacy_children_cells_not_list(self):
@@ -827,12 +814,10 @@ class TestEnhanceTablesWithLlm:
             "app.utils.indexing_helpers.get_table_summary_n_headers",
             new_callable=AsyncMock,
             return_value=mock_response,
-        ), patch(
-            "app.utils.indexing_helpers.get_rows_text",
-            new_callable=AsyncMock,
-            return_value=([""], []),
         ):
             await parser._enhance_tables_with_llm(container)
+
+        assert "row_natural_language_text" not in row.data
 
     @pytest.mark.asyncio
     async def test_row_data_without_cells_key(self):
@@ -856,14 +841,10 @@ class TestEnhanceTablesWithLlm:
             "app.utils.indexing_helpers.get_table_summary_n_headers",
             new_callable=AsyncMock,
             return_value=mock_response,
-        ), patch(
-            "app.utils.indexing_helpers.get_rows_text",
-            new_callable=AsyncMock,
-        ) as mock_rows:
+        ):
             await parser._enhance_tables_with_llm(container)
 
-        # No row_dicts collected => get_rows_text not called
-        mock_rows.assert_not_awaited()
+        assert "row_natural_language_text" not in row.data
 
     @pytest.mark.asyncio
     async def test_empty_headers_and_falsy_row_data(self):
@@ -888,55 +869,15 @@ class TestEnhanceTablesWithLlm:
             "app.utils.indexing_helpers.get_table_summary_n_headers",
             new_callable=AsyncMock,
             return_value=mock_response,
-        ), patch(
-            "app.utils.indexing_helpers.get_rows_text",
-            new_callable=AsyncMock,
-        ) as mock_rows:
+        ):
             await parser._enhance_tables_with_llm(container)
 
         assert bg.data["table_summary"] == "s"
         assert bg.data["column_headers"] == []
-        mock_rows.assert_not_awaited()
+        assert "row_natural_language_text" not in row.data
 
     @pytest.mark.asyncio
-    async def test_row_description_skipped_when_row_data_none(self):
-        parser = _make_parser()
-        row = Block(
-            index=0,
-            type=BlockType.TABLE_ROW,
-            format=DataFormat.JSON,
-            data={"cells": ["v"]},
-        )
-        bg = BlockGroup(
-            index=0,
-            type=GroupType.TABLE,
-            data={"table_markdown": "| A |"},
-        )
-        bg.children = BlockGroupChildren.from_indices(block_indices=[0])
-        container = BlocksContainer(blocks=[row], block_groups=[bg])
-
-        mock_response = MagicMock(summary="s", headers=["A"])
-
-        async def _rows(*_a, **_k):
-            # Clear data before descriptions are applied
-            row.data = None
-            return (["desc"], [])
-
-        with patch(
-            "app.utils.indexing_helpers.get_table_summary_n_headers",
-            new_callable=AsyncMock,
-            return_value=mock_response,
-        ), patch(
-            "app.utils.indexing_helpers.get_rows_text",
-            new_callable=AsyncMock,
-            side_effect=_rows,
-        ):
-            await parser._enhance_tables_with_llm(container)
-
-        assert row.data is None
-
-    @pytest.mark.asyncio
-    async def test_fewer_descriptions_than_rows(self):
+    async def test_each_row_gets_its_own_text(self):
         parser = _make_parser()
         rows = [
             Block(
@@ -960,18 +901,14 @@ class TestEnhanceTablesWithLlm:
             "app.utils.indexing_helpers.get_table_summary_n_headers",
             new_callable=AsyncMock,
             return_value=mock_response,
-        ), patch(
-            "app.utils.indexing_helpers.get_rows_text",
-            new_callable=AsyncMock,
-            return_value=(["only one"], []),
         ):
             await parser._enhance_tables_with_llm(container)
 
-        assert rows[0].data["row_natural_language_text"] == "only one"
-        assert "row_natural_language_text" not in rows[1].data
+        assert rows[0].data["row_natural_language_text"] == "A: v0"
+        assert rows[1].data["row_natural_language_text"] == "A: v1"
 
     @pytest.mark.asyncio
-    async def test_row_without_cells_list_appends_empty_dict(self):
+    async def test_row_with_non_list_cells_skipped(self):
         parser = _make_parser()
         row = Block(
             index=0,
@@ -992,18 +929,13 @@ class TestEnhanceTablesWithLlm:
             "app.utils.indexing_helpers.get_table_summary_n_headers",
             new_callable=AsyncMock,
             return_value=mock_response,
-        ), patch(
-            "app.utils.indexing_helpers.get_rows_text",
-            new_callable=AsyncMock,
-            return_value=([""], []),
-        ) as mock_rows:
+        ):
             await parser._enhance_tables_with_llm(container)
 
-        # grid built from empty row dict
-        assert mock_rows.await_count == 1
+        assert "row_natural_language_text" not in row.data
 
     @pytest.mark.asyncio
-    async def test_no_non_header_rows_skips_get_rows_text(self):
+    async def test_header_only_table_gets_no_row_text(self):
         parser = _make_parser()
         header = Block(
             index=0,
@@ -1025,13 +957,10 @@ class TestEnhanceTablesWithLlm:
             "app.utils.indexing_helpers.get_table_summary_n_headers",
             new_callable=AsyncMock,
             return_value=mock_response,
-        ), patch(
-            "app.utils.indexing_helpers.get_rows_text",
-            new_callable=AsyncMock,
-        ) as mock_rows:
+        ):
             await parser._enhance_tables_with_llm(container)
 
-        mock_rows.assert_not_awaited()
+        assert "row_natural_language_text" not in header.data
 
     @pytest.mark.asyncio
     async def test_out_of_range_block_index_ignored(self):
@@ -1051,13 +980,9 @@ class TestEnhanceTablesWithLlm:
             "app.utils.indexing_helpers.get_table_summary_n_headers",
             new_callable=AsyncMock,
             return_value=mock_response,
-        ), patch(
-            "app.utils.indexing_helpers.get_rows_text",
-            new_callable=AsyncMock,
-        ) as mock_rows:
+        ):
             await parser._enhance_tables_with_llm(container)
 
-        mock_rows.assert_not_awaited()
         assert bg.data["table_summary"] == "s"
 
 
